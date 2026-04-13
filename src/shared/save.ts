@@ -88,18 +88,20 @@ const powerJobSchema = z.object({
   ])
 });
 
-const replayCommandSchema: z.ZodType<ReplayCommand> = z.object({
+const replayCommandSchema = z.object({
   tick: z.number(),
   command: z.union([
     z.literal("editRoad"),
     z.literal("editZone"),
+    z.literal("bulldozeAt"),
+    z.literal("placeLargeJunction"),
     z.literal("placeBuilding"),
     z.literal("placeService"),
     z.literal("setBudget"),
     z.literal("setTimeScale")
   ]),
   payload: z.unknown()
-});
+}) satisfies z.ZodType<ReplayCommand>;
 
 export const saveGameV1Schema = z.object({
   version: z.literal(1),

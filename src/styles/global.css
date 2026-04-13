@@ -1,0 +1,375 @@
+:root {
+  color-scheme: dark;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: #1a1d21;
+  color: #d7dde3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  min-height: 100dvh;
+  background:
+    linear-gradient(180deg, rgba(28, 31, 36, 0.98), rgba(23, 26, 30, 0.98)),
+    #1a1d21;
+  overflow: hidden;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #4a535c;
+  background: linear-gradient(180deg, #414850, #363c44);
+  color: #e6ebf0;
+  border-radius: 4px;
+  min-height: 38px;
+  padding: 0.65rem 0.82rem;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    color 120ms ease;
+}
+
+button:hover {
+  border-color: #73808c;
+  background: linear-gradient(180deg, #4a525c, #3f464e);
+}
+
+button.is-active {
+  background: linear-gradient(180deg, #5d7487, #485b6a);
+  border-color: #91a8ba;
+  color: #f5f8fb;
+}
+
+code {
+  font-family: "SFMono-Regular", "Menlo", monospace;
+  font-size: 0.92em;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow: hidden;
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1.7fr) minmax(160px, 0.8fr) minmax(140px, 0.6fr);
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0.85rem;
+  border-bottom: 1px solid #2c333a;
+  background: linear-gradient(180deg, #2f353c, #262c32);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+  min-width: 0;
+}
+
+.brand-block {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.68rem;
+  color: #95a2ad;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  margin-top: 0.1rem;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+h2 {
+  margin-bottom: 0.75rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #97a3ae;
+}
+
+.lede {
+  margin-top: 0;
+  color: #aab5bf;
+  line-height: 1.45;
+  font-size: 0.93rem;
+}
+
+.toolbar-cluster {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.toolbar-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #9aa6b1;
+}
+
+.toolbar-strip {
+  display: flex;
+  gap: 0.45rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.toolbar-strip button {
+  white-space: nowrap;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr) 300px;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.left-panel,
+.right-panel {
+  padding: 0.75rem;
+  background: #23282d;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.left-panel {
+  border-right: 1px solid #2e353c;
+}
+
+.right-panel {
+  border-left: 1px solid #2e353c;
+}
+
+.panel-section {
+  padding: 0.85rem 0;
+  border-bottom: 1px solid #313840;
+}
+
+.panel-section:first-child {
+  padding-top: 0;
+}
+
+.panel-section:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.stacked-grid {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.stat-card {
+  padding: 0.55rem 0.6rem;
+  border-radius: 4px;
+  background: #2d3339;
+  border: 1px solid #394149;
+}
+
+.stat-card span {
+  display: block;
+  font-size: 0.68rem;
+  color: #9ba7b2;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.stat-card strong {
+  display: block;
+  margin-top: 0.18rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.demand-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.55rem;
+  font-size: 0.86rem;
+}
+
+.demand-track {
+  height: 8px;
+  border-radius: 2px;
+  background: #1a1f24;
+  overflow: hidden;
+  border: 1px solid #394149;
+}
+
+.demand-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #a3794f, #7d98ad);
+}
+
+.hint {
+  color: #aab5bf;
+  line-height: 1.5;
+  font-size: 0.9rem;
+}
+
+.notifications {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.notification {
+  padding: 0.6rem 0.7rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  background: #2c3238;
+  border: 1px solid #384048;
+  color: #d0d6dd;
+}
+
+.notification.warning {
+  border-color: #8a6546;
+}
+
+.notification.error {
+  border-color: #91545b;
+}
+
+.notification.neutral {
+  color: #99a5af;
+}
+
+.viewport {
+  padding: 0.6rem;
+  position: relative;
+  background: #1c2024;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.viewport-header {
+  display: flex;
+  gap: 0.45rem;
+  margin-bottom: 0.45rem;
+}
+
+.viewport-chip {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  padding: 0.35rem 0.55rem;
+  border-radius: 4px;
+  border: 1px solid #394149;
+  background: #2a3036;
+  color: #b4bec8;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.viewport-chip strong {
+  color: #edf1f4;
+  font-size: 0.78rem;
+}
+
+.city-canvas {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: 0;
+  overflow: hidden;
+  border: 1px solid #323941;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.city-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.viewport-status {
+  position: absolute;
+  inset: 2.5rem 0.6rem 0.6rem;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.status-card {
+  max-width: 420px;
+  padding: 1rem 1.1rem;
+  border-radius: 4px;
+  background: rgba(31, 36, 42, 0.94);
+  border: 1px solid #48525d;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+}
+
+.status-card p {
+  margin-top: 0.45rem;
+  color: #b3bec8;
+  line-height: 1.45;
+}
+
+@media (max-width: 1100px) {
+  .app-shell {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .topbar {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .left-panel,
+  .right-panel {
+    border: 0;
+    overflow: visible;
+  }
+
+  .city-canvas {
+    min-height: 48vh;
+  }
+}

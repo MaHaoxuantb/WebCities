@@ -6,7 +6,7 @@ export type OverlayKind = "traffic" | "power" | "happiness";
 export type TimeScale = 0 | 1 | 2 | 3;
 export type ToolMode =
   | "road"
-  | "bulldoze"
+  | "junction-large"
   | "zone-residential"
   | "zone-commercial"
   | "zone-industrial"
@@ -135,6 +135,9 @@ export interface CityStats {
   demandCommercial: number;
   demandIndustrial: number;
   outages: number;
+  poweredBuildings: number;
+  totalBuildings: number;
+  powerPlants: number;
 }
 
 export interface PerfStats {
@@ -169,9 +172,11 @@ export interface ReplayCommand {
   command:
     | "editRoad"
     | "editZone"
+    | "bulldozeAt"
+    | "placeLargeJunction"
     | "placeBuilding"
     | "placeService"
     | "setBudget"
     | "setTimeScale";
-  payload: unknown;
+  payload?: unknown;
 }

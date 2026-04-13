@@ -32,6 +32,27 @@ export type MainToWorkerMessage =
       { x: number; y: number; zoneType: ZoneType | null }
     >
   | WorkerEnvelope<
+      "bulldozeAt",
+      {
+        cellX: number;
+        cellY: number;
+        road?:
+          | {
+              x: number;
+              y: number;
+              orientation: "horizontal" | "vertical";
+            }
+          | null;
+      }
+    >
+  | WorkerEnvelope<
+      "placeLargeJunction",
+      {
+        centerCellX: number;
+        centerCellY: number;
+      }
+    >
+  | WorkerEnvelope<
       "placeBuilding",
       {
         x: number;
@@ -62,17 +83,19 @@ export type WorkerToMainMessage =
 export const toWorkerMessage = <TType extends MainToWorkerMessage["type"]>(
   type: TType,
   payload: Extract<MainToWorkerMessage, { type: TType }>["payload"]
-): Extract<MainToWorkerMessage, { type: TType }> => ({
-  version: 1,
-  type,
-  payload
-});
+): Extract<MainToWorkerMessage, { type: TType }> =>
+  ({
+    version: 1,
+    type,
+    payload
+  }) as Extract<MainToWorkerMessage, { type: TType }>;
 
 export const toMainMessage = <TType extends WorkerToMainMessage["type"]>(
   type: TType,
   payload: Extract<WorkerToMainMessage, { type: TType }>["payload"]
-): Extract<WorkerToMainMessage, { type: TType }> => ({
-  version: 1,
-  type,
-  payload
-});
+): Extract<WorkerToMainMessage, { type: TType }> =>
+  ({
+    version: 1,
+    type,
+    payload
+  }) as Extract<WorkerToMainMessage, { type: TType }>;
