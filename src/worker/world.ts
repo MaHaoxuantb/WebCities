@@ -92,8 +92,7 @@ const spriteTypeForPurpose = (
   return "car";
 };
 
-const JUNCTION_CLEAR_RADIUS = 1;
-const JUNCTION_LANES = 2;
+const JUNCTION_LANES = LOCAL_ROAD_LANES;
 const JUNCTION_SPEED = 1.05;
 
 export class SimWorld {
@@ -236,38 +235,72 @@ export class SimWorld {
   }
 
   placeLargeJunction(centerCellX: number, centerCellY: number) {
-    const left = centerCellX - JUNCTION_CLEAR_RADIUS;
-    const top = centerCellY - JUNCTION_CLEAR_RADIUS;
-
     if (
-      left < 0 ||
-      top < 0 ||
-      left + 2 >= this.width ||
-      top + 2 >= this.height
+      centerCellX <= 0 ||
+      centerCellY <= 0 ||
+      centerCellX >= this.width ||
+      centerCellY >= this.height
     ) {
-      this.pushNotification("Large junction needs a full 3x3 area inside the map.", "warning");
-      return;
-    }
-
-    if (!this.isAreaClear(left, top, 3)) {
       this.pushNotification(
-        "Clear a 3x3 block of zones and buildings before placing a large junction.",
+        "Roundabout must sit on an interior intersection so it can use the four adjacent cells.",
         "warning"
       );
       return;
     }
 
-    for (let offset = 0; offset < 3; offset += 1) {
-      this.upsertRoadSegment(left + offset, top + 1, "horizontal", JUNCTION_LANES, JUNCTION_SPEED);
-      this.upsertRoadSegment(left + offset, top + 2, "horizontal", JUNCTION_LANES, JUNCTION_SPEED);
-      this.upsertRoadSegment(left + 1, top + offset, "vertical", JUNCTION_LANES, JUNCTION_SPEED);
-      this.upsertRoadSegment(left + 2, top + offset, "vertical", JUNCTION_LANES, JUNCTION_SPEED);
+    const left = centerCellX - 1;
+    const top = centerCellY - 1;
+
+    if (!this.isAreaClear(left, top, 2)) {
+      this.pushNotification(
+        "Clear the four adjacent cells before placing a roundabout.",
+        "warning"
+      );
+      return;
     }
+
+    this.roads.delete(roadKey(centerCellX - 1, centerCellY, "horizontal"));
+    this.roads.delete(roadKey(centerCellX, centerCellY, "horizontal"));
+    this.roads.delete(roadKey(centerCellX, centerCellY - 1, "vertical"));
+    this.roads.delete(roadKey(centerCellX, centerCellY, "vertical"));
+
+    this.upsertRoadSegment(left, top, "horizontal", JUNCTION_LANES, JUNCTION_SPEED);
+    this.upsertRoadSegment(centerCellX, top, "horizontal", JUNCTION_LANES, JUNCTION_SPEED);
+    this.upsertRoadSegment(
+      left,
+      centerCellY + 1,
+      "horizontal",
+      JUNCTION_LANES,
+      JUNCTION_SPEED
+    );
+    this.upsertRoadSegment(
+      centerCellX,
+      centerCellY + 1,
+      "horizontal",
+      JUNCTION_LANES,
+      JUNCTION_SPEED
+    );
+    this.upsertRoadSegment(left, top, "vertical", JUNCTION_LANES, JUNCTION_SPEED);
+    this.upsertRoadSegment(left, centerCellY, "vertical", JUNCTION_LANES, JUNCTION_SPEED);
+    this.upsertRoadSegment(
+      centerCellX + 1,
+      top,
+      "vertical",
+      JUNCTION_LANES,
+      JUNCTION_SPEED
+    );
+    this.upsertRoadSegment(
+      centerCellX + 1,
+      centerCellY,
+      "vertical",
+      JUNCTION_LANES,
+      JUNCTION_SPEED
+    );
 
     this.recordReplay("placeLargeJunction", { centerCellX, centerCellY });
     this.rebuildGraph();
     this.pushNotification(
-      `Large junction placed around (${centerCellX}, ${centerCellY}).`,
+      `Roundabout placed around intersection (${centerCellX}, ${centerCellY}).`,
       "info"
     );
   }
@@ -394,7 +427,10 @@ export class SimWorld {
       if (existingBuilding?.kind === "powerPlant") {
         return;
       }
+      this.removeBuilding(existingBuildingId);
     }
+
+    this.zones.delete(slotKey);
 
     const buildingId = this.ids.buildingId++;
     const building: Building = {

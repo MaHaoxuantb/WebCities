@@ -17,6 +17,12 @@ type RoadTarget = {
   distance: number;
 };
 
+type RoundaboutVisual = {
+  centerX: number;
+  centerY: number;
+  utilization: number;
+};
+
 type CanvasAction =
   | {
       type: "road";
@@ -24,6 +30,11 @@ type CanvasAction =
       y: number;
       orientation: Orientation;
       mode: "add" | "remove";
+    }
+  | {
+      type: "junction";
+      centerCellX: number;
+      centerCellY: number;
     }
   | {
       type: "bulldoze";
@@ -50,6 +61,8 @@ interface CameraState {
 }
 
 const ROAD_HIT_THRESHOLD = 0.24;
+const ROAD_OUTER_WIDTH = 12;
+const ROAD_INNER_WIDTH = 6;
 
 const zonePalette: Record<ZoneType, number> = {
   residential: 0x708e70,
@@ -101,7 +114,7 @@ const overlayRoadColor = (utilization: number) => {
     return 0xc1b17a;
   }
 
-  return 0x7d8e99;
+  return 0x8d9ca7;
 };
 
 const happinessColor = (happiness: number) => {
@@ -118,6 +131,52 @@ const happinessColor = (happiness: number) => {
   }
 
   return 0x7f9683;
+};
+
+const detectRoundabouts = (
+  roads: SimSnapshot["roads"],
+  utilizationByKey: Map<string, number>
+) => {
+  const roadKeys = new Set(
+    roads.map((road) => `${road.orientation}:${road.x},${road.y}`)
+  );
+  const roundabouts: RoundaboutVisual[] = [];
+
+  for (let centerX = 1; centerX < WORLD_WIDTH; centerX += 1) {
+    for (let centerY = 1; centerY < WORLD_HEIGHT; centerY += 1) {
+      const ringSegments = [
+        { orientation: "horizontal" as const, x: centerX - 1, y: centerY - 1 },
+        { orientation: "horizontal" as const, x: centerX, y: centerY - 1 },
+        { orientation: "horizontal" as const, x: centerX - 1, y: centerY + 1 },
+        { orientation: "horizontal" as const, x: centerX, y: centerY + 1 },
+        { orientation: "vertical" as const, x: centerX - 1, y: centerY - 1 },
+        { orientation: "vertical" as const, x: centerX - 1, y: centerY },
+        { orientation: "vertical" as const, x: centerX + 1, y: centerY - 1 },
+        { orientation: "vertical" as const, x: centerX + 1, y: centerY }
+      ];
+
+      if (
+        !ringSegments.every((segment) =>
+          roadKeys.has(`${segment.orientation}:${segment.x},${segment.y}`)
+        )
+      ) {
+        continue;
+      }
+
+      const utilization =
+        ringSegments.reduce((sum, segment) => {
+          const key =
+            segment.orientation === "horizontal"
+              ? `${segment.x},${segment.y}:${segment.x + 1},${segment.y}`
+              : `${segment.x},${segment.y}:${segment.x},${segment.y + 1}`;
+          return sum + (utilizationByKey.get(key) ?? 0);
+        }, 0) / ringSegments.length;
+
+      roundabouts.push({ centerX, centerY, utilization });
+    }
+  }
+
+  return roundabouts;
 };
 
 export const CityRenderer = ({
@@ -232,7 +291,7 @@ export const CityRenderer = ({
             ? overlayRoadColor(utilization)
             : 0x79838d;
 
-        scene.lineStyle(road.lanes * 7 + 8, 0x161b1f, 1);
+        scene.lineStyle(ROAD_OUTER_WIDTH, 0x161b1f, 1);
         if (road.orientation === "horizontal") {
           scene.moveTo(road.x * CELL_SIZE, road.y * CELL_SIZE);
           scene.lineTo((road.x + 1) * CELL_SIZE, road.y * CELL_SIZE);
@@ -241,7 +300,7 @@ export const CityRenderer = ({
           scene.lineTo(road.x * CELL_SIZE, (road.y + 1) * CELL_SIZE);
         }
 
-        scene.lineStyle(road.lanes * 5 + 3, roadColor, 1);
+        scene.lineStyle(ROAD_INNER_WIDTH, roadColor, 1);
         if (road.orientation === "horizontal") {
           scene.moveTo(road.x * CELL_SIZE, road.y * CELL_SIZE);
           scene.lineTo((road.x + 1) * CELL_SIZE, road.y * CELL_SIZE);
@@ -249,6 +308,26 @@ export const CityRenderer = ({
           scene.moveTo(road.x * CELL_SIZE, road.y * CELL_SIZE);
           scene.lineTo(road.x * CELL_SIZE, (road.y + 1) * CELL_SIZE);
         }
+      }
+
+      for (const roundabout of detectRoundabouts(current.roads, roadUtilization)) {
+        const ringColor =
+          overlayRef.current === "traffic"
+            ? overlayRoadColor(roundabout.utilization)
+            : 0x79838d;
+
+        scene.lineStyle(ROAD_OUTER_WIDTH + 2, 0x161b1f, 1);
+        scene.drawCircle(
+          roundabout.centerX * CELL_SIZE,
+          roundabout.centerY * CELL_SIZE,
+          CELL_SIZE * 0.95
+        );
+        scene.lineStyle(ROAD_INNER_WIDTH + 2, ringColor, 1);
+        scene.drawCircle(
+          roundabout.centerX * CELL_SIZE,
+          roundabout.centerY * CELL_SIZE,
+          CELL_SIZE * 0.95
+        );
       }
 
       for (const node of current.nodes) {
@@ -308,19 +387,24 @@ export const CityRenderer = ({
       for (const vehicle of current.vehicles) {
         let fill = 0xcfd5db;
         if (vehicle.spriteType === "truck") {
-          fill = 0xb69464;
+          fill = 0xc39554;
         } else if (vehicle.spriteType === "service") {
-          fill = 0x86a0b0;
+          fill = 0x6ea6cf;
         } else if (vehicle.spriteType === "van") {
-          fill = 0xb3a3bc;
+          fill = 0xa4c27e;
         }
 
+        const radius =
+          vehicle.spriteType === "truck"
+            ? 7.5
+            : vehicle.spriteType === "service"
+              ? 7
+              : vehicle.spriteType === "van"
+                ? 6.5
+                : 6;
+
         scene.beginFill(fill, 0.95);
-        scene.drawCircle(
-          vehicle.x * CELL_SIZE,
-          vehicle.y * CELL_SIZE,
-          vehicle.spriteType === "truck" ? 5 : 4
-        );
+        scene.drawCircle(vehicle.x * CELL_SIZE, vehicle.y * CELL_SIZE, radius);
         scene.endFill();
       }
     };
@@ -344,7 +428,6 @@ export const CityRenderer = ({
     const handlePointerDown = (event: PointerEvent) => {
       const wantsPan =
         event.button === 1 ||
-        event.button === 2 ||
         event.altKey ||
         spacePanRef.current;
 
@@ -397,18 +480,7 @@ export const CityRenderer = ({
       const currentTool = toolRef.current;
       const roadTarget = pickRoadTarget(gridX, gridY);
 
-      if (currentTool === "road") {
-        onActionRef.current({
-          type: "road",
-          x: roadTarget.x,
-          y: roadTarget.y,
-          orientation: roadTarget.orientation,
-          mode: "add"
-        });
-        return;
-      }
-
-      if (currentTool === "bulldoze") {
+      if (event.button === 2) {
         onActionRef.current({
           type: "bulldoze",
           cellX,
@@ -421,6 +493,28 @@ export const CityRenderer = ({
                   orientation: roadTarget.orientation
                 }
               : null
+        });
+        return;
+      }
+
+      if (currentTool === "road") {
+        onActionRef.current({
+          type: "road",
+          x: roadTarget.x,
+          y: roadTarget.y,
+          orientation: roadTarget.orientation,
+          mode: "add"
+        });
+        return;
+      }
+
+      if (currentTool === "junction-large") {
+        const nodeX = Math.round(gridX);
+        const nodeY = Math.round(gridY);
+        onActionRef.current({
+          type: "junction",
+          centerCellX: nodeX,
+          centerCellY: nodeY
         });
         return;
       }

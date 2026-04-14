@@ -50,6 +50,11 @@ button:hover {
   background: linear-gradient(180deg, #4a525c, #3f464e);
 }
 
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 button.is-active {
   background: linear-gradient(180deg, #5d7487, #485b6a);
   border-color: #91a8ba;
@@ -70,8 +75,7 @@ code {
 }
 
 .topbar {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1.7fr) minmax(160px, 0.8fr) minmax(140px, 0.6fr);
+  display: flex;
   align-items: center;
   gap: 1rem;
   padding: 0.5rem 0.85rem;
@@ -85,6 +89,9 @@ code {
   display: flex;
   flex-direction: column;
   justify-content: center;
+  width: 220px;
+  flex: 0 0 220px;
+  min-width: 0;
 }
 
 .eyebrow {
@@ -128,6 +135,15 @@ h2 {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 0.7rem;
+  min-width: 0;
+}
+
+.topbar > .toolbar-cluster:first-of-type {
+  flex: 1 1 auto;
+}
+
+.topbar > .toolbar-cluster.compact-strip {
+  flex: 0 0 auto;
 }
 
 .toolbar-label {
@@ -141,11 +157,53 @@ h2 {
   display: flex;
   gap: 0.45rem;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
 }
 
 .toolbar-strip button {
   white-space: nowrap;
+}
+
+.compact-strip {
+  min-width: 0;
+}
+
+.compact-strip .toolbar-strip {
+  justify-content: flex-start;
+}
+
+.toolbar-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: flex-start;
+}
+
+.toolbar-dropdown {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 8;
+  width: 220px;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.45rem;
+  border: 1px solid #424b54;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #2f353b, #262c32);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.3);
+}
+
+.toolbar-dropdown button {
+  width: 100%;
+  text-align: left;
+}
+
+.dropdown-note {
+  padding: 0.2rem 0.15rem 0;
+  color: #a7b2bc;
+  font-size: 0.78rem;
+  line-height: 1.4;
 }
 
 .workspace {
@@ -189,6 +247,13 @@ h2 {
 .stacked-grid {
   display: grid;
   gap: 0.45rem;
+}
+
+.panel-note {
+  margin-top: 0.65rem;
+  color: #aab5bf;
+  font-size: 0.86rem;
+  line-height: 1.45;
 }
 
 .stat-grid {
@@ -347,6 +412,40 @@ h2 {
   margin-top: 0.45rem;
   color: #b3bec8;
   line-height: 1.45;
+}
+
+.startup-overlay {
+  position: absolute;
+  inset: 0.6rem;
+  display: grid;
+  place-items: center;
+  background: rgba(20, 24, 28, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+.startup-card {
+  width: min(540px, calc(100% - 2rem));
+  padding: 1.1rem 1.2rem;
+  border: 1px solid #454f59;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #2d3339, #252b30);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+}
+
+.startup-card p {
+  margin-top: 0.55rem;
+  color: #b4bec8;
+  line-height: 1.45;
+}
+
+.startup-actions {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.hidden-file-input {
+  display: none;
 }
 
 @media (max-width: 1100px) {

@@ -92,4 +92,56 @@ describe("SimWorld", () => {
     world.bulldozeAt(0, 0, { x: 0, y: 1, orientation: "horizontal" });
     expect(world.getSnapshot().roads).toHaveLength(0);
   });
+
+  it("powers buildings only when they can reach a power plant through roads", () => {
+    const world = new SimWorld(10, 10, 123);
+    world.editRoad(0, 1, "horizontal", "add");
+    world.editRoad(1, 1, "horizontal", "add");
+    world.editRoad(2, 1, "horizontal", "add");
+    world.editZone(0, 0, "residential");
+    world.placeService(2, 0, "power");
+
+    const connectedHome = world
+      .debugState()
+      .buildings.find((building) => building.cellX === 0 && building.cellY === 0);
+    expect(connectedHome?.powered).toBe(true);
+
+    world.editRoad(1, 1, "horizontal", "remove");
+    const disconnectedHome = world
+      .debugState()
+      .buildings.find((building) => building.cellX === 0 && building.cellY === 0);
+    expect(disconnectedHome?.powered).toBe(false);
+  });
+
+  it("places a roundabout ring around the four cells adjacent to an intersection", () => {
+    const world = new SimWorld(12, 12, 123);
+    world.placeLargeJunction(4, 4);
+    const roads = world.getSnapshot().roads;
+    expect(roads).toHaveLength(8);
+    expect(
+      roads.some(
+        (road) => road.x === 3 && road.y === 3 && road.orientation === "horizontal"
+      )
+    ).toBe(true);
+    expect(
+      roads.some(
+        (road) => road.x === 4 && road.y === 3 && road.orientation === "horizontal"
+      )
+    ).toBe(true);
+    expect(
+      roads.some(
+        (road) => road.x === 3 && road.y === 5 && road.orientation === "horizontal"
+      )
+    ).toBe(true);
+    expect(
+      roads.some(
+        (road) => road.x === 5 && road.y === 4 && road.orientation === "vertical"
+      )
+    ).toBe(true);
+
+    const blocked = new SimWorld(12, 12, 123);
+    blocked.editZone(3, 3, "residential");
+    blocked.placeLargeJunction(4, 4);
+    expect(blocked.getSnapshot().roads).toHaveLength(0);
+  });
 });
