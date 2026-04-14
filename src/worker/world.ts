@@ -21,6 +21,7 @@ import type {
   PerfStats,
   PowerJob,
   ReplayCommand,
+  RoadDirection,
   RoadEdge,
   RoadNode,
   RoadSegment,
@@ -264,37 +265,49 @@ export class SimWorld {
     this.roads.delete(roadKey(centerCellX, centerCellY - 1, "vertical"));
     this.roads.delete(roadKey(centerCellX, centerCellY, "vertical"));
 
-    this.upsertRoadSegment(left, top, "horizontal", JUNCTION_LANES, JUNCTION_SPEED);
-    this.upsertRoadSegment(centerCellX, top, "horizontal", JUNCTION_LANES, JUNCTION_SPEED);
+    this.upsertRoadSegment(left, top, "horizontal", JUNCTION_LANES, JUNCTION_SPEED, "forward", centerCellX, centerCellY);
+    this.upsertRoadSegment(centerCellX, top, "horizontal", JUNCTION_LANES, JUNCTION_SPEED, "forward", centerCellX, centerCellY);
     this.upsertRoadSegment(
       left,
       centerCellY + 1,
       "horizontal",
       JUNCTION_LANES,
-      JUNCTION_SPEED
+      JUNCTION_SPEED,
+      "reverse",
+      centerCellX,
+      centerCellY
     );
     this.upsertRoadSegment(
       centerCellX,
       centerCellY + 1,
       "horizontal",
       JUNCTION_LANES,
-      JUNCTION_SPEED
+      JUNCTION_SPEED,
+      "reverse",
+      centerCellX,
+      centerCellY
     );
-    this.upsertRoadSegment(left, top, "vertical", JUNCTION_LANES, JUNCTION_SPEED);
-    this.upsertRoadSegment(left, centerCellY, "vertical", JUNCTION_LANES, JUNCTION_SPEED);
+    this.upsertRoadSegment(left, top, "vertical", JUNCTION_LANES, JUNCTION_SPEED, "reverse", centerCellX, centerCellY);
+    this.upsertRoadSegment(left, centerCellY, "vertical", JUNCTION_LANES, JUNCTION_SPEED, "reverse", centerCellX, centerCellY);
     this.upsertRoadSegment(
       centerCellX + 1,
       top,
       "vertical",
       JUNCTION_LANES,
-      JUNCTION_SPEED
+      JUNCTION_SPEED,
+      "forward",
+      centerCellX,
+      centerCellY
     );
     this.upsertRoadSegment(
       centerCellX + 1,
       centerCellY,
       "vertical",
       JUNCTION_LANES,
-      JUNCTION_SPEED
+      JUNCTION_SPEED,
+      "forward",
+      centerCellX,
+      centerCellY
     );
 
     this.recordReplay("placeLargeJunction", { centerCellX, centerCellY });
@@ -795,7 +808,10 @@ export class SimWorld {
     y: number,
     orientation: Orientation,
     lanes: number,
-    speedLimit: number
+    speedLimit: number,
+    direction: RoadDirection = "both",
+    roundaboutCenterX?: number,
+    roundaboutCenterY?: number
   ) {
     const key = roadKey(x, y, orientation);
     this.roads.set(key, {
@@ -803,8 +819,11 @@ export class SimWorld {
       x,
       y,
       orientation,
+      direction,
       lanes,
-      speedLimit
+      speedLimit,
+      roundaboutCenterX,
+      roundaboutCenterY
     });
   }
 
@@ -900,15 +919,22 @@ export class SimWorld {
           utilization: 0,
           travelTime: baseTravelTime,
           blocked: false,
-          baseTravelTime
+          baseTravelTime,
+          roundaboutCenterX: segment.roundaboutCenterX,
+          roundaboutCenterY: segment.roundaboutCenterY
         };
 
         this.edges.push(edge);
         this.adjacency[fromId].push(edgeId);
       };
 
-      makeEdge(fromNodeId, toNodeId);
-      makeEdge(toNodeId, fromNodeId);
+      if (segment.direction === "both" || segment.direction === "forward") {
+        makeEdge(fromNodeId, toNodeId);
+      }
+
+      if (segment.direction === "both" || segment.direction === "reverse") {
+        makeEdge(toNodeId, fromNodeId);
+      }
     }
 
     this.networkVersion += 1;
@@ -1324,14 +1350,36 @@ export class SimWorld {
           }
 
           const offset = (sampleIndex / Math.max(sampleCount, 1)) * 0.12;
-          const x = fromNode.x + (toNode.x - fromNode.x) * clamp(ratio - offset, 0, 1);
-          const y = fromNode.y + (toNode.y - fromNode.y) * clamp(ratio - offset, 0, 1);
+          const adjustedRatio = clamp(ratio - offset, 0, 1);
+          let x = fromNode.x + (toNode.x - fromNode.x) * adjustedRatio;
+          let y = fromNode.y + (toNode.y - fromNode.y) * adjustedRatio;
+          let heading = Math.atan2(toNode.y - fromNode.y, toNode.x - fromNode.x);
+
+          if (
+            edge.roundaboutCenterX !== undefined &&
+            edge.roundaboutCenterY !== undefined
+          ) {
+            const centerX = edge.roundaboutCenterX;
+            const centerY = edge.roundaboutCenterY;
+            const startAngle = Math.atan2(fromNode.y - centerY, fromNode.x - centerX);
+            let endAngle = Math.atan2(toNode.y - centerY, toNode.x - centerX);
+            while (endAngle <= startAngle) {
+              endAngle += Math.PI * 2;
+            }
+
+            const angle = startAngle + (endAngle - startAngle) * adjustedRatio;
+            const radius = 1;
+            x = centerX + Math.cos(angle) * radius;
+            y = centerY + Math.sin(angle) * radius;
+            heading = angle + Math.PI / 2;
+          }
+
           vehicles.push({
             id: trip.id * 100 + sampleIndex,
             packetId: trip.id,
             x,
             y,
-            heading: Math.atan2(toNode.y - fromNode.y, toNode.x - fromNode.x),
+            heading,
             spriteType: spriteTypeForPurpose(trip.purpose),
             weight: trip.quantity
           });

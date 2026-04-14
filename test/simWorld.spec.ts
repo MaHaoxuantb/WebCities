@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { SimWorld } from "../src/worker/world";
+import { findBestRoute } from "../src/worker/pathfinding";
 
 const buildingIdAt = (world: SimWorld, cellX: number, cellY: number) =>
   world
@@ -143,5 +144,33 @@ describe("SimWorld", () => {
     blocked.editZone(3, 3, "residential");
     blocked.placeLargeJunction(4, 4);
     expect(blocked.getSnapshot().roads).toHaveLength(0);
+  });
+
+  it("routes traffic around the roundabout in one direction", () => {
+    const world = new SimWorld(12, 12, 123);
+    world.placeLargeJunction(4, 4);
+
+    const topNode = world.nodes.find((node) => node.x === 4 && node.y === 3);
+    const rightNode = world.nodes.find((node) => node.x === 5 && node.y === 4);
+    expect(topNode).toBeDefined();
+    expect(rightNode).toBeDefined();
+
+    const clockwise = findBestRoute(
+      world,
+      [topNode!.id],
+      [rightNode!.id],
+      new Map()
+    );
+    const reverse = findBestRoute(
+      world,
+      [rightNode!.id],
+      [topNode!.id],
+      new Map()
+    );
+
+    expect(clockwise).not.toBeNull();
+    expect(reverse).not.toBeNull();
+    expect(clockwise!.edgeIds.length).toBe(2);
+    expect(reverse!.edgeIds.length).toBeGreaterThan(clockwise!.edgeIds.length);
   });
 });

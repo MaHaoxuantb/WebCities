@@ -1,4 +1,5 @@
 export type Orientation = "horizontal" | "vertical";
+export type RoadDirection = "both" | "forward" | "reverse";
 export type ZoneType = "residential" | "commercial" | "industrial";
 export type ServiceKind = "power";
 export type TripPurpose = "commute" | "commercial" | "cargo" | "service";
@@ -17,8 +18,11 @@ export interface RoadSegment {
   x: number;
   y: number;
   orientation: Orientation;
+  direction: RoadDirection;
   lanes: number;
   speedLimit: number;
+  roundaboutCenterX?: number;
+  roundaboutCenterY?: number;
 }
 
 export interface RoadNode {
@@ -42,6 +46,8 @@ export interface RoadEdge {
   travelTime: number;
   blocked: boolean;
   baseTravelTime: number;
+  roundaboutCenterX?: number;
+  roundaboutCenterY?: number;
 }
 
 export interface ZoneCell {

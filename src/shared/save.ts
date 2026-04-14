@@ -7,8 +7,13 @@ const roadSegmentSchema = z.object({
   x: z.number(),
   y: z.number(),
   orientation: z.union([z.literal("horizontal"), z.literal("vertical")]),
+  direction: z
+    .union([z.literal("both"), z.literal("forward"), z.literal("reverse")])
+    .default("both"),
   lanes: z.number(),
-  speedLimit: z.number()
+  speedLimit: z.number(),
+  roundaboutCenterX: z.number().optional(),
+  roundaboutCenterY: z.number().optional()
 });
 
 const zoneSchema = z.object({
