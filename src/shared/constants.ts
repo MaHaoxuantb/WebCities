@@ -1,6 +1,7 @@
 import type { OverlayKind, TimeScale, ToolMode, ZoneType } from "./types";
 
 export const SIM_TICK_MS = 200;
+export const SIM_PRESENTATION_INTERVAL_MS = 1000 / 30;
 export const WORLD_WIDTH = 128;
 export const WORLD_HEIGHT = 128;
 export const CELL_SIZE = 40;

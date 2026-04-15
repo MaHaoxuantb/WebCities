@@ -98,6 +98,12 @@ const spriteTypeForPurpose = (
 const JUNCTION_LANES = LOCAL_ROAD_LANES;
 const JUNCTION_SPEED = 1.05;
 
+interface BudgetBreakdown {
+  populationIncome: number;
+  roadsUpkeep: number;
+  facilitiesUpkeep: number;
+}
+
 export class SimWorld {
   width: number;
   height: number;
@@ -204,17 +210,18 @@ export class SimWorld {
     return notifications;
   }
 
-  getSnapshot(): SimSnapshot {
+  getSnapshot(simulationAlpha = 0): SimSnapshot {
     const snapshot: SimSnapshot = {
       tick: this.tick,
       timeScale: this.timeScale,
+      simulationAlpha,
       roads: this.getRoads(),
       nodes: this.nodes.map((node) => ({ ...node })),
       edges: this.edges.map((edge) => ({ ...edge })),
       zones: this.getZones(),
       buildings: this.getBuildings(),
       services: this.getFacilities(),
-      vehicles: this.sampleVisibleVehicles(),
+      vehicles: this.sampleVisibleVehicles(simulationAlpha),
       cityStats: this.computeStats(),
       perfStats: this.computePerfStats(),
       overlay: this.overlay
@@ -568,6 +575,7 @@ export class SimWorld {
   }
 
   private computeStats(): CityStats {
+    const budgetBreakdown = this.computeBudgetBreakdown();
     let population = 0;
     let jobs = 0;
     let residentialCount = 0;
@@ -641,6 +649,13 @@ export class SimWorld {
       queuedTrips,
       avgTravelTime,
       budget: this.budget,
+      budgetIncome: budgetBreakdown.populationIncome,
+      roadsUpkeep: budgetBreakdown.roadsUpkeep,
+      facilitiesUpkeep: budgetBreakdown.facilitiesUpkeep,
+      budgetDelta:
+        budgetBreakdown.populationIncome -
+        budgetBreakdown.roadsUpkeep -
+        budgetBreakdown.facilitiesUpkeep,
       demandResidential: clamp((jobs - population) * 2 + 50, 0, 100),
       demandCommercial: clamp(
         population > 0 ? (commercialCount / Math.max(1, residentialCount)) * 40 : 35,
@@ -1311,8 +1326,7 @@ export class SimWorld {
   }
 
   private updateBuildingsAndEconomy() {
-    let roadsUpkeep = this.roads.size * 0.3;
-    let facilitiesUpkeep = this.facilities.size * 12;
+    const budgetBreakdown = this.computeBudgetBreakdown();
     let populationIncome = 0;
     this.refreshPowerState();
 
@@ -1346,11 +1360,29 @@ export class SimWorld {
       }
     }
 
-    this.budget += populationIncome - roadsUpkeep - facilitiesUpkeep;
+    this.budget +=
+      populationIncome -
+      budgetBreakdown.roadsUpkeep -
+      budgetBreakdown.facilitiesUpkeep;
     this.refreshPowerState();
   }
 
-  private sampleVisibleVehicles() {
+  private computeBudgetBreakdown(): BudgetBreakdown {
+    let populationIncome = 0;
+    for (const building of this.buildings.values()) {
+      if (building.kind === "residential") {
+        populationIncome += building.occupancy * 0.8;
+      }
+    }
+
+    return {
+      populationIncome,
+      roadsUpkeep: this.roads.size * 0.3,
+      facilitiesUpkeep: this.facilities.size * 12
+    };
+  }
+
+  private sampleVisibleVehicles(simulationAlpha = 0) {
     const vehicles: VisibleVehicle[] = [];
     const activeTrips = [...this.activeTrips.values()];
     activeTrips.sort((a, b) => a.id - b.id);
@@ -1369,7 +1401,8 @@ export class SimWorld {
         const toNode = this.nodes[edge.toNodeId];
         const ratio =
           trip.edgeTicksTotal > 0
-            ? 1 - trip.edgeTicksRemaining / trip.edgeTicksTotal
+            ? 1 -
+              Math.max(0, trip.edgeTicksRemaining - simulationAlpha) / trip.edgeTicksTotal
             : 0;
 
         for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {

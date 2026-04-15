@@ -249,6 +249,73 @@ h2 {
   gap: 0.45rem;
 }
 
+.tip-list,
+.doc-list,
+.ledger {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.tip-card,
+.doc-card,
+.ledger-row {
+  border: 1px solid #384149;
+  border-radius: 10px;
+  background: #2a3036;
+}
+
+.tip-card {
+  padding: 0.7rem 0.8rem;
+  color: #c9d2d9;
+  line-height: 1.45;
+  font-size: 0.86rem;
+}
+
+.doc-card {
+  overflow: hidden;
+}
+
+.doc-card summary {
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.7rem 0.8rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.doc-card summary::-webkit-details-marker {
+  display: none;
+}
+
+.doc-card summary span {
+  color: #edf1f4;
+  font-size: 0.84rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.doc-card summary small {
+  color: #9eacb9;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.doc-body {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0 0.8rem 0.8rem;
+}
+
+.doc-body.compact {
+  padding: 0;
+}
+
+.doc-body p {
+  color: #b7c1ca;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
 .panel-note {
   margin-top: 0.65rem;
   color: #aab5bf;
@@ -257,6 +324,12 @@ h2 {
 }
 
 .stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.budget-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.45rem;
@@ -379,6 +452,14 @@ h2 {
   font-size: 0.78rem;
 }
 
+.viewport-chip.positive {
+  border-color: #4c6b59;
+}
+
+.viewport-chip.negative {
+  border-color: #7d574d;
+}
+
 .city-canvas {
   position: absolute;
   inset: 0;
@@ -451,6 +532,21 @@ h2 {
 
 .hidden-file-input {
   display: none;
+}
+
+.ledger-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.65rem 0.75rem;
+  color: #aeb8c1;
+  font-size: 0.82rem;
+}
+
+.ledger-row strong {
+  color: #edf1f4;
+  text-align: right;
+  font-size: 0.84rem;
 }
 
 @media (max-width: 1100px) {

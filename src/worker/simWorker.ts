@@ -2,7 +2,13 @@
 
 import type { MainToWorkerMessage } from "../shared/messages";
 import { toMainMessage } from "../shared/messages";
-import { SAVE_SLOT_KEY, WORLD_HEIGHT, WORLD_WIDTH } from "../shared/constants";
+import {
+  SAVE_SLOT_KEY,
+  SIM_PRESENTATION_INTERVAL_MS,
+  SIM_TICK_MS,
+  WORLD_HEIGHT,
+  WORLD_WIDTH
+} from "../shared/constants";
 import { SimWorld } from "./world";
 
 let world = new SimWorld(WORLD_WIDTH, WORLD_HEIGHT, 1337);
@@ -11,11 +17,12 @@ let lastFrameTime = performance.now();
 let lastPostedTick = -1;
 let snapshotDirty = true;
 
-const postSnapshot = () => {
-  const snapshot = world.getSnapshot();
+const getSimulationAlpha = () =>
+  world.timeScale > 0 ? Math.min(0.999, accumulator / SIM_TICK_MS) : 0;
+
+const postSnapshot = (simulationAlpha = getSimulationAlpha()) => {
+  const snapshot = world.getSnapshot(simulationAlpha);
   self.postMessage(toMainMessage("simSnapshot", { snapshot }));
-  self.postMessage(toMainMessage("cityStats", snapshot.cityStats));
-  self.postMessage(toMainMessage("perfStats", snapshot.perfStats));
 
   for (const notification of world.consumeNotifications()) {
     self.postMessage(toMainMessage("notification", notification));
@@ -33,19 +40,19 @@ const runLoop = () => {
   let advanced = false;
   if (world.timeScale > 0) {
     accumulator += delta * world.timeScale;
-    while (accumulator >= 200) {
+    while (accumulator >= SIM_TICK_MS) {
       world.tickOnce();
-      accumulator -= 200;
+      accumulator -= SIM_TICK_MS;
       advanced = true;
     }
   }
 
-  if (advanced || snapshotDirty || world.tick !== lastPostedTick) {
+  if (advanced || snapshotDirty || world.tick !== lastPostedTick || world.timeScale > 0) {
     postSnapshot();
   }
 };
 
-self.setInterval(runLoop, 100);
+self.setInterval(runLoop, SIM_PRESENTATION_INTERVAL_MS);
 
 self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
   const message = event.data;
@@ -59,7 +66,7 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
       accumulator = 0;
       lastFrameTime = performance.now();
       snapshotDirty = true;
-      postSnapshot();
+      postSnapshot(0);
       break;
     case "editRoad":
       world.editRoad(
@@ -128,12 +135,7 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
     case "requestOverlay":
       world.setOverlay(message.payload.overlay);
       snapshotDirty = true;
-      self.postMessage(
-        toMainMessage("overlayData", {
-          overlay: message.payload.overlay,
-          snapshot: world.getSnapshot()
-        })
-      );
+      postSnapshot();
       break;
     case "saveGame":
       self.postMessage(
@@ -148,7 +150,7 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
       accumulator = 0;
       lastFrameTime = performance.now();
       snapshotDirty = true;
-      postSnapshot();
+      postSnapshot(0);
       break;
     case "requestSnapshot":
       snapshotDirty = true;

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { startTransition, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   DEFAULT_OVERLAY,
@@ -39,22 +39,75 @@ const overlays: Array<{ id: OverlayKind; title: string; detail: string }> = [
   {
     id: "traffic",
     title: "Traffic View",
-    detail: "Shows road utilization and queue pressure."
+    detail: "Shows road utilization, queue pressure, and where service trips will bog down."
   },
   {
     id: "power",
     title: "Power Grid",
-    detail: "Shows which buildings are energized by road-connected power plants."
+    detail: "Shows which buildings are energized through the current road-connected power network."
   },
   {
     id: "happiness",
     title: "Land Stress",
-    detail: "Shows areas trending toward stability or abandonment."
+    detail: "Shows where outages or missing access are pushing buildings toward abandonment."
+  }
+];
+
+const systemDocs: Array<{
+  title: string;
+  summary: string;
+  body: string[];
+}> = [
+  {
+    title: "Road Network",
+    summary: "Roads define every trip, queue, service response, and power path.",
+    body: [
+      "Roads snap to cell edges and become the graph that commuters, cargo, and maintenance crews use.",
+      "Roundabouts replace a four-way intersection with a one-way loop, which usually reduces queue buildup.",
+      "Traffic pressure is about both speed and storage. A road can become blocked when the next edge has no room for another packet."
+    ]
+  },
+  {
+    title: "Zoning",
+    summary: "Residential creates population, while commercial and industrial create job demand.",
+    body: [
+      "Residential buildings grow occupancy when they have road access, power, and enough happiness.",
+      "Commercial and industrial buildings provide jobs only when they can connect to the road graph.",
+      "Buildings trend toward abandonment when they stay disconnected, unpowered, or repeatedly delayed."
+    ]
+  },
+  {
+    title: "Power And Crews",
+    summary: "Power and maintenance both depend on the same reachable road network.",
+    body: [
+      "A building is powered only when at least one of its access nodes can reach a power plant.",
+      "Power outages spawn over time on active buildings and remain until a maintenance crew reaches the site.",
+      "Each power plant provides two crews, so plants improve both coverage and outage recovery capacity."
+    ]
+  },
+  {
+    title: "Demand And Budget",
+    summary: "Budget and growth are driven by occupied homes and the cost of keeping infrastructure online.",
+    body: [
+      "The budget updates every twenty ticks from residential income minus road upkeep and power facility upkeep.",
+      "Residential demand rises when jobs outpace population. Commercial and industrial demand react to the current mix of homes and employment.",
+      "If infrastructure grows faster than occupancy, the budget cycle turns negative until more homes fill in."
+    ]
+  },
+  {
+    title: "Overlays And Saves",
+    summary: "Use overlays to diagnose the current bottleneck and saves to preserve a city state.",
+    body: [
+      "Traffic view explains congestion, power view shows energized coverage, and land stress reveals happiness pressure.",
+      "The sim keeps one IndexedDB autosave slot and also supports importing or exporting local JSON save files.",
+      "Starting a new city resets the simulation seed while leaving the current UI controls and save workflow intact."
+    ]
   }
 ];
 
 const timeScales: TimeScale[] = [0, 1, 2, 3];
 const AUTOSAVE_DELAY_MS = 1500;
+const MAX_NOTIFICATIONS = 6;
 
 export const App = () => {
   const workerRef = useRef<Worker | null>(null);
@@ -84,10 +137,15 @@ export const App = () => {
       switch (message.type) {
         case "simSnapshot":
           setRuntimeError(null);
-          setSnapshot(message.payload.snapshot);
+          startTransition(() => {
+            setSnapshot(message.payload.snapshot);
+          });
           break;
         case "notification":
-          setNotifications((current) => [message.payload, ...current.slice(0, 5)]);
+          setNotifications((current) => [
+            message.payload,
+            ...current.slice(0, MAX_NOTIFICATIONS - 1)
+          ]);
           break;
         case "saveReady":
           await saveGameToIndexedDb(message.payload.saveGame, SAVE_SLOT_KEY);
@@ -101,7 +159,7 @@ export const App = () => {
                 level: "info",
                 text: "Save file exported and autosave updated."
               },
-              ...current.slice(0, 5)
+              ...current.slice(0, MAX_NOTIFICATIONS - 1)
             ]);
             setIsExporting(false);
           }
@@ -242,7 +300,7 @@ export const App = () => {
         level: "info",
         text: "Started a new city."
       },
-      ...current.slice(0, 5)
+      ...current.slice(0, MAX_NOTIFICATIONS - 1)
     ]);
   }, [send]);
 
@@ -256,7 +314,7 @@ export const App = () => {
           level: "warning",
           text: "No autosave was found in IndexedDB."
         },
-        ...current.slice(0, 5)
+        ...current.slice(0, MAX_NOTIFICATIONS - 1)
       ]);
       return;
     }
@@ -269,7 +327,7 @@ export const App = () => {
         level: "info",
         text: "Loaded the autosave from IndexedDB."
       },
-      ...current.slice(0, 5)
+      ...current.slice(0, MAX_NOTIFICATIONS - 1)
     ]);
   }, [send]);
 
@@ -292,7 +350,7 @@ export const App = () => {
             level: "info",
             text: `Loaded ${file.name}.`
           },
-          ...current.slice(0, 5)
+          ...current.slice(0, MAX_NOTIFICATIONS - 1)
         ]);
       } catch {
         setNotifications((current) => [
@@ -301,7 +359,7 @@ export const App = () => {
             level: "error",
             text: "Could not read that save file."
           },
-          ...current.slice(0, 5)
+          ...current.slice(0, MAX_NOTIFICATIONS - 1)
         ]);
       } finally {
         pendingImportModeRef.current = null;
@@ -312,9 +370,13 @@ export const App = () => {
   );
 
   const activeOverlay = overlays.find((entry) => entry.id === overlay);
+  const stats = snapshot?.cityStats ?? null;
+  const budgetDelta = stats?.budgetDelta ?? 0;
+  const budgetDeltaLabel =
+    budgetDelta >= 0 ? `+${budgetDelta.toFixed(1)}` : budgetDelta.toFixed(1);
   const poweredRatio =
-    snapshot && snapshot.cityStats.totalBuildings > 0
-      ? `${snapshot.cityStats.poweredBuildings}/${snapshot.cityStats.totalBuildings}`
+    stats && stats.totalBuildings > 0
+      ? `${stats.poweredBuildings}/${stats.totalBuildings}`
       : "0/0";
   const toolLabel =
     tool === "junction-large"
@@ -322,6 +384,21 @@ export const App = () => {
       : tool === "service-power"
         ? "power plant"
         : tool.replace("zone-", "");
+  const quickTips = [
+    tool === "road"
+      ? "Lay down a connected road spine before zoning so new buildings instantly inherit access."
+      : tool === "junction-large"
+        ? "Roundabouts work best where four approach roads meet and queues are stacking at one node."
+        : tool === "service-power"
+          ? "A power plant adds coverage and two crews, but each plant also increases ongoing upkeep."
+          : "Zone adjacent to connected roads so the building can join the network as soon as it spawns.",
+    stats && stats.poweredBuildings < stats.totalBuildings
+      ? "Some buildings are dark. Extend the road network toward the outage or add another plant closer to demand."
+      : "Powered buildings still rely on traffic flow because freight and maintenance crews travel on the same roads as commuters.",
+    budgetDelta < 0
+      ? "Your current budget cycle is negative. More occupied homes or less infrastructure will stabilize the city."
+      : "The current budget cycle is positive, which means occupied homes are covering your road and facility upkeep."
+  ];
 
   return (
     <div className="app-shell">
@@ -409,6 +486,17 @@ export const App = () => {
           </section>
 
           <section className="panel-section">
+            <h2>Quick Tips</h2>
+            <div className="tip-list">
+              {quickTips.map((tip) => (
+                <div className="tip-card" key={tip}>
+                  {tip}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel-section">
             <h2>Views</h2>
             <div className="stacked-grid">
               {overlays.map((entry) => (
@@ -434,12 +522,22 @@ export const App = () => {
           </section>
 
           <section className="panel-section">
-            <h2>Power</h2>
-            <p className="hint">
-              Power plants energize buildings only when the building can reach a plant
-              through the road network. Outages still require maintenance crews to get
-              through traffic.
-            </p>
+            <h2>Systems Guide</h2>
+            <div className="doc-list">
+              {systemDocs.map((entry) => (
+                <details className="doc-card" key={entry.title}>
+                  <summary>
+                    <span>{entry.title}</span>
+                    <small>{entry.summary}</small>
+                  </summary>
+                  <div className="doc-body">
+                    {entry.body.map((paragraph) => (
+                      <p key={paragraph}>{paragraph}</p>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
           </section>
         </aside>
 
@@ -453,6 +551,9 @@ export const App = () => {
             </div>
             <div className="viewport-chip">
               Power <strong>{poweredRatio}</strong>
+            </div>
+            <div className={`viewport-chip ${budgetDelta >= 0 ? "positive" : "negative"}`}>
+              Budget Flow <strong>{budgetDeltaLabel}</strong>
             </div>
           </div>
 
@@ -508,33 +609,74 @@ export const App = () => {
           <section className="panel-section">
             <h2>City State</h2>
             <div className="stat-grid">
-              <Stat label="Tick" value={snapshot?.cityStats.tick ?? 0} />
-              <Stat label="Pop" value={snapshot?.cityStats.population ?? 0} />
-              <Stat label="Jobs" value={snapshot?.cityStats.jobs ?? 0} />
-              <Stat label="Trips" value={snapshot?.cityStats.activeTrips ?? 0} />
-              <Stat label="Queued" value={snapshot?.cityStats.queuedTrips ?? 0} />
-              <Stat label="Budget" value={Math.round(snapshot?.cityStats.budget ?? 0)} />
-              <Stat label="Outages" value={snapshot?.cityStats.outages ?? 0} />
-              <Stat label="Plants" value={snapshot?.cityStats.powerPlants ?? 0} />
-              <Stat label="Powered" value={snapshot?.cityStats.poweredBuildings ?? 0} />
+              <Stat label="Tick" value={stats?.tick ?? 0} />
+              <Stat label="Pop" value={stats?.population ?? 0} />
+              <Stat label="Jobs" value={stats?.jobs ?? 0} />
+              <Stat label="Trips" value={stats?.activeTrips ?? 0} />
+              <Stat label="Queued" value={stats?.queuedTrips ?? 0} />
+              <Stat label="Budget" value={Math.round(stats?.budget ?? 0)} />
+              <Stat label="Outages" value={stats?.outages ?? 0} />
+              <Stat label="Plants" value={stats?.powerPlants ?? 0} />
+              <Stat label="Powered" value={stats?.poweredBuildings ?? 0} />
               <Stat label="Tick ms" value={snapshot?.perfStats.tickMs ?? 0} />
             </div>
           </section>
 
           <section className="panel-section">
             <h2>Demand</h2>
-            <DemandBar
-              label="Residential"
-              value={snapshot?.cityStats.demandResidential ?? 0}
-            />
-            <DemandBar
-              label="Commercial"
-              value={snapshot?.cityStats.demandCommercial ?? 0}
-            />
-            <DemandBar
-              label="Industrial"
-              value={snapshot?.cityStats.demandIndustrial ?? 0}
-            />
+            <DemandBar label="Residential" value={stats?.demandResidential ?? 0} />
+            <DemandBar label="Commercial" value={stats?.demandCommercial ?? 0} />
+            <DemandBar label="Industrial" value={stats?.demandIndustrial ?? 0} />
+          </section>
+
+          <section className="panel-section">
+            <h2>Budget Flow</h2>
+            <div className="budget-grid">
+              <Stat label="Income" value={stats?.budgetIncome ?? 0} />
+              <Stat label="Road Upkeep" value={stats?.roadsUpkeep ?? 0} />
+              <Stat label="Facility Upkeep" value={stats?.facilitiesUpkeep ?? 0} />
+              <Stat label="Net / Cycle" value={stats?.budgetDelta ?? 0} />
+            </div>
+            <p className="panel-note">
+              Budget updates every 20 ticks. Income comes from occupied residential
+              buildings, while each road segment and power facility adds upkeep.
+            </p>
+            <div className="ledger">
+              <div className="ledger-row">
+                <span>Occupied homes</span>
+                <strong>
+                  {stats
+                    ? `${Math.round(stats.population)} pop funding ${stats.budgetIncome.toFixed(1)}`
+                    : "0 pop funding 0.0"}
+                </strong>
+              </div>
+              <div className="ledger-row">
+                <span>Infrastructure load</span>
+                <strong>
+                  {stats
+                    ? `${stats.roadsUpkeep.toFixed(1)} roads + ${stats.facilitiesUpkeep.toFixed(1)} facilities`
+                    : "0.0 roads + 0.0 facilities"}
+                </strong>
+              </div>
+            </div>
+          </section>
+
+          <section className="panel-section">
+            <h2>Feature Notes</h2>
+            <div className="doc-body compact">
+              <p>
+                Trips originate from homes toward jobs and commercial leisure, while
+                industrial buildings also create cargo trips toward commercial targets.
+              </p>
+              <p>
+                The traffic overlay reflects utilization and queueing on each road edge,
+                so a road can look stressed even before it becomes fully blocked.
+              </p>
+              <p>
+                Happiness recovers when buildings regain power and access, which means
+                a cleaner road network improves both traffic and land stability.
+              </p>
+            </div>
           </section>
 
           <section className="panel-section">
@@ -566,7 +708,7 @@ export const App = () => {
 const Stat = ({ label, value }: { label: string; value: number }) => (
   <div className="stat-card">
     <span>{label}</span>
-    <strong>{Number.isFinite(value) ? value : 0}</strong>
+    <strong>{Number.isFinite(value) ? value.toFixed(value % 1 === 0 ? 0 : 1) : 0}</strong>
   </div>
 );
 

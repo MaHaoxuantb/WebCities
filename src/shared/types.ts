@@ -137,6 +137,10 @@ export interface CityStats {
   queuedTrips: number;
   avgTravelTime: number;
   budget: number;
+  budgetIncome: number;
+  roadsUpkeep: number;
+  facilitiesUpkeep: number;
+  budgetDelta: number;
   demandResidential: number;
   demandCommercial: number;
   demandIndustrial: number;
@@ -161,6 +165,7 @@ export interface NotificationMessage {
 export interface SimSnapshot {
   tick: number;
   timeScale: TimeScale;
+  simulationAlpha: number;
   roads: RoadSegment[];
   nodes: RoadNode[];
   edges: RoadEdge[];

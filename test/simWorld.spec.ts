@@ -114,6 +114,46 @@ describe("SimWorld", () => {
     expect(disconnectedHome?.powered).toBe(false);
   });
 
+  it("reports budget flow details in city stats", () => {
+    const world = new SimWorld(10, 10, 123);
+    world.editRoad(0, 1, "horizontal", "add");
+    world.editRoad(1, 1, "horizontal", "add");
+    world.editZone(0, 0, "residential");
+    world.placeService(2, 0, "power");
+
+    const stats = world.getSnapshot().cityStats;
+
+    expect(stats.budgetIncome).toBeGreaterThan(0);
+    expect(stats.roadsUpkeep).toBeGreaterThan(0);
+    expect(stats.facilitiesUpkeep).toBeGreaterThan(0);
+    expect(stats.budgetDelta).toBe(
+      stats.budgetIncome - stats.roadsUpkeep - stats.facilitiesUpkeep
+    );
+  });
+
+  it("interpolates visible vehicle positions between sim ticks", () => {
+    const world = new SimWorld(8, 8, 123);
+    world.editRoad(0, 1, "horizontal", "add");
+    world.editRoad(1, 1, "horizontal", "add");
+    world.editRoad(2, 1, "horizontal", "add");
+    world.editZone(0, 0, "residential");
+    world.editZone(2, 0, "commercial");
+
+    const originId = buildingIdAt(world, 0, 0)!;
+    const destinationId = buildingIdAt(world, 2, 0)!;
+    const packet = world.debugCreateTrip(originId, destinationId, "commute", 1);
+    expect(packet).not.toBeNull();
+
+    world.tickOnce();
+
+    const before = world.getSnapshot(0).vehicles[0];
+    const after = world.getSnapshot(0.75).vehicles[0];
+
+    expect(before).toBeDefined();
+    expect(after).toBeDefined();
+    expect(after.x).toBeGreaterThan(before.x);
+  });
+
   it("places a roundabout ring around the four cells adjacent to an intersection", () => {
     const world = new SimWorld(12, 12, 123);
     world.placeLargeJunction(4, 4);
