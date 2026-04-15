@@ -108,6 +108,10 @@ const systemDocs: Array<{
 const timeScales: TimeScale[] = [0, 1, 2, 3];
 const AUTOSAVE_DELAY_MS = 1500;
 const MAX_NOTIFICATIONS = 6;
+type SystemTheme = "dark" | "light";
+
+const getPreferredTheme = (): SystemTheme =>
+  window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 
 export const App = () => {
   const workerRef = useRef<Worker | null>(null);
@@ -124,6 +128,21 @@ export const App = () => {
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [startupChoiceOpen, setStartupChoiceOpen] = useState(true);
   const [hasAutosave, setHasAutosave] = useState<boolean | null>(null);
+  const [systemTheme, setSystemTheme] = useState<SystemTheme>(() => getPreferredTheme());
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: light)");
+    const handleChange = () => {
+      setSystemTheme(mediaQuery.matches ? "light" : "dark");
+    };
+
+    handleChange();
+    mediaQuery.addEventListener("change", handleChange);
+
+    return () => {
+      mediaQuery.removeEventListener("change", handleChange);
+    };
+  }, []);
 
   useEffect(() => {
     const worker = new Worker(new URL("../worker/simWorker.ts", import.meta.url), {
@@ -561,6 +580,7 @@ export const App = () => {
             snapshot={snapshot}
             overlay={overlay}
             tool={tool}
+            theme={systemTheme}
             onAction={handleCanvasAction}
           />
 

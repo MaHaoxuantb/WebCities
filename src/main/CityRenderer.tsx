@@ -62,6 +62,7 @@ interface CityRendererProps {
   snapshot: SimSnapshot | null;
   overlay: OverlayKind;
   tool: ToolMode;
+  theme: "dark" | "light";
   onAction: (action: CanvasAction) => void;
 }
 
@@ -78,6 +79,58 @@ const ROAD_OUTER_WIDTH = 12;
 const ROAD_INNER_WIDTH = 6;
 const ROAD_SEGMENT_STYLE = { cap: "butt" as const, join: "miter" as const };
 const ROAD_RING_STYLE = { cap: "round" as const, join: "round" as const };
+
+interface ThemePalette {
+  sceneBackground: number;
+  grid: number;
+  roadShell: number;
+  roadNeutral: number;
+  queue: number;
+  buildingNeutral: number;
+  powerPlant: number;
+  powered: number;
+  unpowered: number;
+  outageCross: number;
+  vehicleNeutral: number;
+  vehicleTruck: number;
+  vehicleService: number;
+  vehicleVan: number;
+}
+
+const themePalette: Record<"dark" | "light", ThemePalette> = {
+  dark: {
+    sceneBackground: 0x20252a,
+    grid: 0x2b3137,
+    roadShell: 0x161b1f,
+    roadNeutral: 0x79838d,
+    queue: 0x9d7758,
+    buildingNeutral: 0xaeb6bc,
+    powerPlant: 0x7d93a1,
+    powered: 0x8b9c73,
+    unpowered: 0xa26762,
+    outageCross: 0x8f625d,
+    vehicleNeutral: 0xcfd5db,
+    vehicleTruck: 0xc39554,
+    vehicleService: 0x6ea6cf,
+    vehicleVan: 0xa4c27e
+  },
+  light: {
+    sceneBackground: 0xf2efe8,
+    grid: 0xd5cfc2,
+    roadShell: 0x5e5a53,
+    roadNeutral: 0x8b95a1,
+    queue: 0xc08a5d,
+    buildingNeutral: 0x81909c,
+    powerPlant: 0x5e8197,
+    powered: 0x7d9a63,
+    unpowered: 0xbd695d,
+    outageCross: 0x9f5b52,
+    vehicleNeutral: 0x4e5962,
+    vehicleTruck: 0xaf7b32,
+    vehicleService: 0x4a86ba,
+    vehicleVan: 0x6f9160
+  }
+};
 
 const zonePalette: Record<ZoneType, number> = {
   residential: 0x708e70,
@@ -270,6 +323,7 @@ export const CityRenderer = ({
   snapshot,
   overlay,
   tool,
+  theme,
   onAction
 }: CityRendererProps) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -282,6 +336,7 @@ export const CityRenderer = ({
   const snapshotRef = useRef<SimSnapshot | null>(snapshot);
   const overlayRef = useRef<OverlayKind>(overlay);
   const toolRef = useRef<ToolMode>(tool);
+  const themeRef = useRef<"dark" | "light">(theme);
   const onActionRef = useRef(onAction);
   const cameraRef = useRef<CameraState>({ x: 56, y: 56, zoom: 1 });
   const spacePanRef = useRef(false);
@@ -289,11 +344,12 @@ export const CityRenderer = ({
   snapshotRef.current = snapshot;
   overlayRef.current = overlay;
   toolRef.current = tool;
+  themeRef.current = theme;
   onActionRef.current = onAction;
 
   useEffect(() => {
     scheduleRenderRef.current?.();
-  }, [snapshot, overlay]);
+  }, [snapshot, overlay, theme]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -325,23 +381,26 @@ export const CityRenderer = ({
 
       const scene = graphicsRef.current;
       const container = worldContainerRef.current;
+      const palette = themePalette[themeRef.current];
       container.position.set(Math.round(camera.x), Math.round(camera.y));
       container.scale.set(camera.zoom);
       scene.clear();
 
-      scene.rect(0, 0, CELL_SIZE * WORLD_WIDTH, CELL_SIZE * WORLD_HEIGHT).fill(0x20252a);
+      scene
+        .rect(0, 0, CELL_SIZE * WORLD_WIDTH, CELL_SIZE * WORLD_HEIGHT)
+        .fill(palette.sceneBackground);
 
       for (let x = 0; x <= CELL_SIZE * WORLD_WIDTH; x += CELL_SIZE) {
         scene
           .moveTo(x, 0)
           .lineTo(x, CELL_SIZE * WORLD_HEIGHT)
-          .stroke({ width: 1, color: 0x2b3137, alpha: 1 });
+          .stroke({ width: 1, color: palette.grid, alpha: 1 });
       }
       for (let y = 0; y <= CELL_SIZE * WORLD_HEIGHT; y += CELL_SIZE) {
         scene
           .moveTo(0, y)
           .lineTo(CELL_SIZE * WORLD_WIDTH, y)
-          .stroke({ width: 1, color: 0x2b3137, alpha: 1 });
+          .stroke({ width: 1, color: palette.grid, alpha: 1 });
       }
 
       if (!current) {
@@ -372,9 +431,9 @@ export const CityRenderer = ({
         const roadColor =
           overlayRef.current === "traffic"
             ? overlayRoadColor(utilization)
-            : 0x79838d;
+            : palette.roadNeutral;
 
-        drawRoadStroke(scene, road, ROAD_OUTER_WIDTH, 0x161b1f);
+        drawRoadStroke(scene, road, ROAD_OUTER_WIDTH, palette.roadShell);
         drawRoadStroke(scene, road, ROAD_INNER_WIDTH, roadColor);
       }
 
@@ -382,11 +441,11 @@ export const CityRenderer = ({
         const junctionColor =
           overlayRef.current === "traffic"
             ? overlayRoadColor(junction.utilization)
-            : 0x79838d;
+            : palette.roadNeutral;
 
         scene
           .circle(junction.x * CELL_SIZE, junction.y * CELL_SIZE, ROAD_OUTER_WIDTH / 2)
-          .fill(0x161b1f);
+          .fill(palette.roadShell);
         scene
           .circle(junction.x * CELL_SIZE, junction.y * CELL_SIZE, ROAD_INNER_WIDTH / 2)
           .fill(junctionColor);
@@ -396,7 +455,7 @@ export const CityRenderer = ({
         const ringColor =
           overlayRef.current === "traffic"
             ? overlayRoadColor(roundabout.utilization)
-            : 0x79838d;
+            : palette.roadNeutral;
 
         scene
           .circle(
@@ -406,7 +465,7 @@ export const CityRenderer = ({
           )
           .stroke({
             width: ROAD_OUTER_WIDTH + 2,
-            color: 0x161b1f,
+            color: palette.roadShell,
             alpha: 1,
             ...ROAD_RING_STYLE
           });
@@ -435,15 +494,15 @@ export const CityRenderer = ({
             node.y * CELL_SIZE,
             Math.min(16, 5 + node.queueLength)
           )
-          .fill({ color: 0x9d7758, alpha: 0.55 });
+          .fill({ color: palette.queue, alpha: 0.55 });
       }
 
       for (const building of current.buildings) {
-        let color = 0xaeb6bc;
+        let color = palette.buildingNeutral;
         if (building.kind === "powerPlant") {
-          color = 0x7d93a1;
+          color = palette.powerPlant;
         } else if (overlayRef.current === "power") {
-          color = building.powered ? 0x8b9c73 : 0xa26762;
+          color = building.powered ? palette.powered : palette.unpowered;
         } else if (overlayRef.current === "happiness") {
           color = happinessColor(building.happiness);
         } else if (building.kind in zonePalette) {
@@ -467,7 +526,7 @@ export const CityRenderer = ({
               building.cellX * CELL_SIZE + CELL_SIZE - 10,
               building.cellY * CELL_SIZE + CELL_SIZE - 10
             )
-            .stroke({ width: 2.5, color: 0x8f625d, alpha: 1 });
+            .stroke({ width: 2.5, color: palette.outageCross, alpha: 1 });
           scene
             .moveTo(
               building.cellX * CELL_SIZE + CELL_SIZE - 10,
@@ -477,18 +536,18 @@ export const CityRenderer = ({
               building.cellX * CELL_SIZE + 10,
               building.cellY * CELL_SIZE + CELL_SIZE - 10
             )
-            .stroke({ width: 2.5, color: 0x8f625d, alpha: 1 });
+            .stroke({ width: 2.5, color: palette.outageCross, alpha: 1 });
         }
       }
 
       for (const vehicle of current.vehicles) {
-        let fill = 0xcfd5db;
+        let fill = palette.vehicleNeutral;
         if (vehicle.spriteType === "truck") {
-          fill = 0xc39554;
+          fill = palette.vehicleTruck;
         } else if (vehicle.spriteType === "service") {
-          fill = 0x6ea6cf;
+          fill = palette.vehicleService;
         } else if (vehicle.spriteType === "van") {
-          fill = 0xa4c27e;
+          fill = palette.vehicleVan;
         }
 
         const radius =
@@ -673,7 +732,7 @@ export const CityRenderer = ({
 
     const setup = async () => {
       await app.init({
-        backgroundColor: 0x20252a,
+        backgroundColor: themePalette[themeRef.current].sceneBackground,
         antialias: false,
         resizeTo: host,
         autoDensity: true,
