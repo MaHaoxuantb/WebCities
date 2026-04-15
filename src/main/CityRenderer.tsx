@@ -2,6 +2,13 @@ import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
 
 import { CELL_SIZE, WORLD_HEIGHT, WORLD_WIDTH } from "../shared/constants";
+import {
+  getNormalizedEdgeKey,
+  getRoadEdgeKey,
+  getRoadEndpoints,
+  getRoadNodeKey,
+  getRoadSegmentKey
+} from "../shared/roadGeometry";
 import type {
   OverlayKind,
   Orientation,
@@ -20,6 +27,12 @@ type RoadTarget = {
 type RoundaboutVisual = {
   centerX: number;
   centerY: number;
+  utilization: number;
+};
+
+type JunctionVisual = {
+  x: number;
+  y: number;
   utilization: number;
 };
 
@@ -63,6 +76,8 @@ interface CameraState {
 const ROAD_HIT_THRESHOLD = 0.24;
 const ROAD_OUTER_WIDTH = 12;
 const ROAD_INNER_WIDTH = 6;
+const ROAD_SEGMENT_STYLE = { cap: "butt" as const, join: "miter" as const };
+const ROAD_RING_STYLE = { cap: "round" as const, join: "round" as const };
 
 const zonePalette: Record<ZoneType, number> = {
   residential: 0x708e70,
@@ -133,12 +148,30 @@ const happinessColor = (happiness: number) => {
   return 0x7f9683;
 };
 
+const drawRoadStroke = (
+  scene: Graphics,
+  road: SimSnapshot["roads"][number],
+  width: number,
+  color: number
+) => {
+  const [from, to] = getRoadEndpoints(road);
+  scene
+    .moveTo(from.x * CELL_SIZE, from.y * CELL_SIZE)
+    .lineTo(to.x * CELL_SIZE, to.y * CELL_SIZE)
+    .stroke({
+      width,
+      color,
+      alpha: 1,
+      ...ROAD_SEGMENT_STYLE
+    });
+};
+
 const detectRoundabouts = (
   roads: SimSnapshot["roads"],
   utilizationByKey: Map<string, number>
 ) => {
   const roadKeys = new Set(
-    roads.map((road) => `${road.orientation}:${road.x},${road.y}`)
+    roads.map((road) => getRoadSegmentKey(road.x, road.y, road.orientation))
   );
   const roundabouts: RoundaboutVisual[] = [];
 
@@ -157,7 +190,7 @@ const detectRoundabouts = (
 
       if (
         !ringSegments.every((segment) =>
-          roadKeys.has(`${segment.orientation}:${segment.x},${segment.y}`)
+          roadKeys.has(getRoadSegmentKey(segment.x, segment.y, segment.orientation))
         )
       ) {
         continue;
@@ -165,11 +198,7 @@ const detectRoundabouts = (
 
       const utilization =
         ringSegments.reduce((sum, segment) => {
-          const key =
-            segment.orientation === "horizontal"
-              ? `${segment.x},${segment.y}:${segment.x + 1},${segment.y}`
-              : `${segment.x},${segment.y}:${segment.x},${segment.y + 1}`;
-          return sum + (utilizationByKey.get(key) ?? 0);
+          return sum + (utilizationByKey.get(getRoadEdgeKey(segment)) ?? 0);
         }, 0) / ringSegments.length;
 
       roundabouts.push({ centerX, centerY, utilization });
@@ -177,6 +206,64 @@ const detectRoundabouts = (
   }
 
   return roundabouts;
+};
+
+const detectJunctions = (
+  roads: SimSnapshot["roads"],
+  utilizationByKey: Map<string, number>
+) => {
+  const nodeIncidents = new Map<
+    string,
+    {
+      x: number;
+      y: number;
+      horizontal: number;
+      vertical: number;
+      utilization: number;
+      segments: number;
+    }
+  >();
+
+  const addIncident = (
+    x: number,
+    y: number,
+    orientation: Orientation,
+    utilization: number
+  ) => {
+    const key = getRoadNodeKey(x, y);
+    const entry = nodeIncidents.get(key) ?? {
+      x,
+      y,
+      horizontal: 0,
+      vertical: 0,
+      utilization: 0,
+      segments: 0
+    };
+    if (orientation === "horizontal") {
+      entry.horizontal += 1;
+    } else {
+      entry.vertical += 1;
+    }
+    entry.utilization += utilization;
+    entry.segments += 1;
+    nodeIncidents.set(key, entry);
+  };
+
+  for (const road of roads) {
+    const utilization = utilizationByKey.get(getRoadEdgeKey(road)) ?? 0;
+    const [start, end] = getRoadEndpoints(road);
+
+    addIncident(start.x, start.y, road.orientation, utilization);
+    addIncident(end.x, end.y, road.orientation, utilization);
+  }
+
+  return [...nodeIncidents.values()]
+    .filter((entry) => entry.horizontal > 0 && entry.vertical > 0)
+    .map<JunctionVisual>((entry) => ({
+      x: entry.x,
+      y: entry.y,
+      utilization: entry.utilization / Math.max(entry.segments, 1)
+    }));
 };
 
 export const CityRenderer = ({
@@ -196,7 +283,7 @@ export const CityRenderer = ({
   const overlayRef = useRef<OverlayKind>(overlay);
   const toolRef = useRef<ToolMode>(tool);
   const onActionRef = useRef(onAction);
-  const cameraRef = useRef<CameraState>({ x: 56, y: 56, zoom: 0.9 });
+  const cameraRef = useRef<CameraState>({ x: 56, y: 56, zoom: 1 });
   const spacePanRef = useRef(false);
 
   snapshotRef.current = snapshot;
@@ -238,22 +325,23 @@ export const CityRenderer = ({
 
       const scene = graphicsRef.current;
       const container = worldContainerRef.current;
-      container.position.set(camera.x, camera.y);
+      container.position.set(Math.round(camera.x), Math.round(camera.y));
       container.scale.set(camera.zoom);
       scene.clear();
 
-      scene.beginFill(0x20252a);
-      scene.drawRect(0, 0, CELL_SIZE * WORLD_WIDTH, CELL_SIZE * WORLD_HEIGHT);
-      scene.endFill();
+      scene.rect(0, 0, CELL_SIZE * WORLD_WIDTH, CELL_SIZE * WORLD_HEIGHT).fill(0x20252a);
 
-      scene.lineStyle(1, 0x2b3137, 1);
       for (let x = 0; x <= CELL_SIZE * WORLD_WIDTH; x += CELL_SIZE) {
-        scene.moveTo(x, 0);
-        scene.lineTo(x, CELL_SIZE * WORLD_HEIGHT);
+        scene
+          .moveTo(x, 0)
+          .lineTo(x, CELL_SIZE * WORLD_HEIGHT)
+          .stroke({ width: 1, color: 0x2b3137, alpha: 1 });
       }
       for (let y = 0; y <= CELL_SIZE * WORLD_HEIGHT; y += CELL_SIZE) {
-        scene.moveTo(0, y);
-        scene.lineTo(CELL_SIZE * WORLD_WIDTH, y);
+        scene
+          .moveTo(0, y)
+          .lineTo(CELL_SIZE * WORLD_WIDTH, y)
+          .stroke({ width: 1, color: 0x2b3137, alpha: 1 });
       }
 
       if (!current) {
@@ -264,50 +352,44 @@ export const CityRenderer = ({
       for (const edge of current.edges) {
         const fromNode = current.nodes[edge.fromNodeId];
         const toNode = current.nodes[edge.toNodeId];
-        const key = `${Math.min(fromNode.x, toNode.x)},${Math.min(
-          fromNode.y,
-          toNode.y
-        )}:${Math.max(fromNode.x, toNode.x)},${Math.max(fromNode.y, toNode.y)}`;
+        const key = getNormalizedEdgeKey(fromNode.x, fromNode.y, toNode.x, toNode.y);
         roadUtilization.set(
           key,
           Math.max(edge.utilization, roadUtilization.get(key) ?? 0)
         );
       }
 
+      const junctions = detectJunctions(current.roads, roadUtilization);
+
       for (const zone of current.zones) {
-        scene.beginFill(zonePalette[zone.zoneType], 0.16);
-        scene.drawRect(zone.x * CELL_SIZE, zone.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-        scene.endFill();
+        scene
+          .rect(zone.x * CELL_SIZE, zone.y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+          .fill({ color: zonePalette[zone.zoneType], alpha: 0.16 });
       }
 
       for (const road of current.roads) {
-        const key =
-          road.orientation === "horizontal"
-            ? `${road.x},${road.y}:${road.x + 1},${road.y}`
-            : `${road.x},${road.y}:${road.x},${road.y + 1}`;
-        const utilization = roadUtilization.get(key) ?? 0;
+        const utilization = roadUtilization.get(getRoadEdgeKey(road)) ?? 0;
         const roadColor =
           overlayRef.current === "traffic"
             ? overlayRoadColor(utilization)
             : 0x79838d;
 
-        scene.lineStyle(ROAD_OUTER_WIDTH, 0x161b1f, 1);
-        if (road.orientation === "horizontal") {
-          scene.moveTo(road.x * CELL_SIZE, road.y * CELL_SIZE);
-          scene.lineTo((road.x + 1) * CELL_SIZE, road.y * CELL_SIZE);
-        } else {
-          scene.moveTo(road.x * CELL_SIZE, road.y * CELL_SIZE);
-          scene.lineTo(road.x * CELL_SIZE, (road.y + 1) * CELL_SIZE);
-        }
+        drawRoadStroke(scene, road, ROAD_OUTER_WIDTH, 0x161b1f);
+        drawRoadStroke(scene, road, ROAD_INNER_WIDTH, roadColor);
+      }
 
-        scene.lineStyle(ROAD_INNER_WIDTH, roadColor, 1);
-        if (road.orientation === "horizontal") {
-          scene.moveTo(road.x * CELL_SIZE, road.y * CELL_SIZE);
-          scene.lineTo((road.x + 1) * CELL_SIZE, road.y * CELL_SIZE);
-        } else {
-          scene.moveTo(road.x * CELL_SIZE, road.y * CELL_SIZE);
-          scene.lineTo(road.x * CELL_SIZE, (road.y + 1) * CELL_SIZE);
-        }
+      for (const junction of junctions) {
+        const junctionColor =
+          overlayRef.current === "traffic"
+            ? overlayRoadColor(junction.utilization)
+            : 0x79838d;
+
+        scene
+          .circle(junction.x * CELL_SIZE, junction.y * CELL_SIZE, ROAD_OUTER_WIDTH / 2)
+          .fill(0x161b1f);
+        scene
+          .circle(junction.x * CELL_SIZE, junction.y * CELL_SIZE, ROAD_INNER_WIDTH / 2)
+          .fill(junctionColor);
       }
 
       for (const roundabout of detectRoundabouts(current.roads, roadUtilization)) {
@@ -316,18 +398,30 @@ export const CityRenderer = ({
             ? overlayRoadColor(roundabout.utilization)
             : 0x79838d;
 
-        scene.lineStyle(ROAD_OUTER_WIDTH + 2, 0x161b1f, 1);
-        scene.drawCircle(
-          roundabout.centerX * CELL_SIZE,
-          roundabout.centerY * CELL_SIZE,
-          CELL_SIZE * 0.95
-        );
-        scene.lineStyle(ROAD_INNER_WIDTH + 2, ringColor, 1);
-        scene.drawCircle(
-          roundabout.centerX * CELL_SIZE,
-          roundabout.centerY * CELL_SIZE,
-          CELL_SIZE * 0.95
-        );
+        scene
+          .circle(
+            roundabout.centerX * CELL_SIZE,
+            roundabout.centerY * CELL_SIZE,
+            CELL_SIZE * 0.95
+          )
+          .stroke({
+            width: ROAD_OUTER_WIDTH + 2,
+            color: 0x161b1f,
+            alpha: 1,
+            ...ROAD_RING_STYLE
+          });
+        scene
+          .circle(
+            roundabout.centerX * CELL_SIZE,
+            roundabout.centerY * CELL_SIZE,
+            CELL_SIZE * 0.95
+          )
+          .stroke({
+            width: ROAD_INNER_WIDTH + 2,
+            color: ringColor,
+            alpha: 1,
+            ...ROAD_RING_STYLE
+          });
       }
 
       for (const node of current.nodes) {
@@ -335,13 +429,13 @@ export const CityRenderer = ({
           continue;
         }
 
-        scene.beginFill(0x9d7758, 0.55);
-        scene.drawCircle(
-          node.x * CELL_SIZE,
-          node.y * CELL_SIZE,
-          Math.min(16, 5 + node.queueLength)
-        );
-        scene.endFill();
+        scene
+          .circle(
+            node.x * CELL_SIZE,
+            node.y * CELL_SIZE,
+            Math.min(16, 5 + node.queueLength)
+          )
+          .fill({ color: 0x9d7758, alpha: 0.55 });
       }
 
       for (const building of current.buildings) {
@@ -356,31 +450,34 @@ export const CityRenderer = ({
           color = zonePalette[building.kind as ZoneType];
         }
 
-        scene.beginFill(color, building.abandoned ? 0.3 : 0.82);
-        scene.drawRoundedRect(
-          building.cellX * CELL_SIZE + 5,
-          building.cellY * CELL_SIZE + 5,
-          CELL_SIZE - 10,
-          CELL_SIZE - 10,
-          7
-        );
-        scene.endFill();
+        scene
+          .roundRect(
+            building.cellX * CELL_SIZE + 5,
+            building.cellY * CELL_SIZE + 5,
+            CELL_SIZE - 10,
+            CELL_SIZE - 10,
+            7
+          )
+          .fill({ color, alpha: building.abandoned ? 0.3 : 0.82 });
 
         if (!building.powered && building.kind !== "powerPlant") {
-          scene.lineStyle(2.5, 0x8f625d, 1);
-          scene.moveTo(building.cellX * CELL_SIZE + 10, building.cellY * CELL_SIZE + 10);
-          scene.lineTo(
-            building.cellX * CELL_SIZE + CELL_SIZE - 10,
-            building.cellY * CELL_SIZE + CELL_SIZE - 10
-          );
-          scene.moveTo(
-            building.cellX * CELL_SIZE + CELL_SIZE - 10,
-            building.cellY * CELL_SIZE + 10
-          );
-          scene.lineTo(
-            building.cellX * CELL_SIZE + 10,
-            building.cellY * CELL_SIZE + CELL_SIZE - 10
-          );
+          scene
+            .moveTo(building.cellX * CELL_SIZE + 10, building.cellY * CELL_SIZE + 10)
+            .lineTo(
+              building.cellX * CELL_SIZE + CELL_SIZE - 10,
+              building.cellY * CELL_SIZE + CELL_SIZE - 10
+            )
+            .stroke({ width: 2.5, color: 0x8f625d, alpha: 1 });
+          scene
+            .moveTo(
+              building.cellX * CELL_SIZE + CELL_SIZE - 10,
+              building.cellY * CELL_SIZE + 10
+            )
+            .lineTo(
+              building.cellX * CELL_SIZE + 10,
+              building.cellY * CELL_SIZE + CELL_SIZE - 10
+            )
+            .stroke({ width: 2.5, color: 0x8f625d, alpha: 1 });
         }
       }
 
@@ -403,9 +500,9 @@ export const CityRenderer = ({
                 ? 6.5
                 : 6;
 
-        scene.beginFill(fill, 0.95);
-        scene.drawCircle(vehicle.x * CELL_SIZE, vehicle.y * CELL_SIZE, radius);
-        scene.endFill();
+        scene
+          .circle(vehicle.x * CELL_SIZE, vehicle.y * CELL_SIZE, radius)
+          .fill({ color: fill, alpha: 0.95 });
       }
     };
 
@@ -577,9 +674,10 @@ export const CityRenderer = ({
     const setup = async () => {
       await app.init({
         backgroundColor: 0x20252a,
-        antialias: true,
+        antialias: false,
         resizeTo: host,
-        autoDensity: true
+        autoDensity: true,
+        resolution: window.devicePixelRatio || 1
       });
 
       if (cancelled) {
@@ -588,6 +686,7 @@ export const CityRenderer = ({
       }
 
       app.stop();
+      app.canvas.style.imageRendering = "crisp-edges";
       appRef.current = app;
       worldContainerRef.current = worldContainer;
       graphicsRef.current = graphics;

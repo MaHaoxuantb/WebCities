@@ -10,6 +10,12 @@ import {
   TRIP_GENERATION_INTERVAL,
   VEHICLE_SAMPLE_DIVISOR
 } from "../shared/constants";
+import {
+  getAdjacentRoadKeysForCell,
+  getRoadEndpoints,
+  getRoadNodeKey,
+  getRoadSegmentKey
+} from "../shared/roadGeometry";
 import { parseSaveGame, type SaveGameV1 } from "../shared/save";
 import { createRng, type SeededRng } from "../shared/rng";
 import type {
@@ -49,11 +55,7 @@ interface WorldIds {
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
-const roadKey = (x: number, y: number, orientation: Orientation) =>
-  `${orientation}:${x},${y}`;
-
 const cellKey = (x: number, y: number) => `${x},${y}`;
-const nodeCoordKey = (x: number, y: number) => `${x},${y}`;
 
 const defaultIds = (): WorldIds => ({
   buildingId: 1,
@@ -260,10 +262,10 @@ export class SimWorld {
       return;
     }
 
-    this.roads.delete(roadKey(centerCellX - 1, centerCellY, "horizontal"));
-    this.roads.delete(roadKey(centerCellX, centerCellY, "horizontal"));
-    this.roads.delete(roadKey(centerCellX, centerCellY - 1, "vertical"));
-    this.roads.delete(roadKey(centerCellX, centerCellY, "vertical"));
+    this.roads.delete(getRoadSegmentKey(centerCellX - 1, centerCellY, "horizontal"));
+    this.roads.delete(getRoadSegmentKey(centerCellX, centerCellY, "horizontal"));
+    this.roads.delete(getRoadSegmentKey(centerCellX, centerCellY - 1, "vertical"));
+    this.roads.delete(getRoadSegmentKey(centerCellX, centerCellY, "vertical"));
 
     this.upsertRoadSegment(left, top, "horizontal", JUNCTION_LANES, JUNCTION_SPEED, "forward", centerCellX, centerCellY);
     this.upsertRoadSegment(centerCellX, top, "horizontal", JUNCTION_LANES, JUNCTION_SPEED, "forward", centerCellX, centerCellY);
@@ -332,7 +334,7 @@ export class SimWorld {
     let didChange = false;
 
     if (road) {
-      const key = roadKey(road.x, road.y, road.orientation);
+      const key = getRoadSegmentKey(road.x, road.y, road.orientation);
       if (this.roads.has(key)) {
         this.roads.delete(key);
         didChange = true;
@@ -360,7 +362,7 @@ export class SimWorld {
       return;
     }
 
-    const key = roadKey(x, y, orientation);
+    const key = getRoadSegmentKey(x, y, orientation);
 
     if (mode === "add") {
       this.upsertRoadSegment(x, y, orientation, LOCAL_ROAD_LANES, LOCAL_ROAD_SPEED);
@@ -566,34 +568,70 @@ export class SimWorld {
   }
 
   private computeStats(): CityStats {
-    const buildings = this.getBuildings();
-    const population = buildings
-      .filter((building) => building.kind === "residential")
-      .reduce((sum, building) => sum + building.occupancy, 0);
-    const jobs = buildings.reduce((sum, building) => sum + building.jobs, 0);
-    const queuedTrips = this.getActiveTrips().filter((trip) => trip.state === "queued")
-      .length;
-    const activeEdges = this.edges.filter((edge) => edge.load > 0);
-    const avgTravelTime =
-      activeEdges.length > 0
-        ? activeEdges.reduce((sum, edge) => sum + edge.travelTime, 0) /
-          activeEdges.length
-        : 0;
+    let population = 0;
+    let jobs = 0;
+    let residentialCount = 0;
+    let commercialCount = 0;
+    let industrialCount = 0;
+    let totalBuildings = 0;
+    let poweredBuildings = 0;
+    let powerPlants = 0;
 
-    const residentialCount = buildings.filter(
-      (building) => building.kind === "residential" && !building.abandoned
-    ).length;
-    const commercialCount = buildings.filter(
-      (building) => building.kind === "commercial" && !building.abandoned
-    ).length;
-    const industrialCount = buildings.filter(
-      (building) => building.kind === "industrial" && !building.abandoned
-    ).length;
-    const totalBuildings = buildings.filter((building) => building.kind !== "powerPlant").length;
-    const poweredBuildings = buildings.filter(
-      (building) => building.kind !== "powerPlant" && building.powered
-    ).length;
-    const powerPlants = buildings.filter((building) => building.kind === "powerPlant").length;
+    for (const building of this.buildings.values()) {
+      jobs += building.jobs;
+
+      if (building.kind === "powerPlant") {
+        powerPlants += 1;
+        continue;
+      }
+
+      totalBuildings += 1;
+      if (building.powered) {
+        poweredBuildings += 1;
+      }
+
+      if (building.kind === "residential") {
+        population += building.occupancy;
+      }
+
+      if (building.abandoned) {
+        continue;
+      }
+
+      if (building.kind === "residential") {
+        residentialCount += 1;
+      } else if (building.kind === "commercial") {
+        commercialCount += 1;
+      } else if (building.kind === "industrial") {
+        industrialCount += 1;
+      }
+    }
+
+    let queuedTrips = 0;
+    for (const trip of this.activeTrips.values()) {
+      if (trip.state === "queued") {
+        queuedTrips += 1;
+      }
+    }
+
+    let activeEdgeCount = 0;
+    let totalTravelTime = 0;
+    for (const edge of this.edges) {
+      if (edge.load <= 0) {
+        continue;
+      }
+
+      activeEdgeCount += 1;
+      totalTravelTime += edge.travelTime;
+    }
+
+    const avgTravelTime = activeEdgeCount > 0 ? totalTravelTime / activeEdgeCount : 0;
+    let outages = 0;
+    for (const job of this.powerJobs.values()) {
+      if (job.state !== "resolved") {
+        outages += 1;
+      }
+    }
 
     return {
       tick: this.tick,
@@ -614,8 +652,7 @@ export class SimWorld {
         0,
         100
       ),
-      outages: [...this.powerJobs.values()].filter((job) => job.state !== "resolved")
-        .length,
+      outages,
       poweredBuildings,
       totalBuildings,
       powerPlants
@@ -700,34 +737,25 @@ export class SimWorld {
 
   private resolveBuildingAccess(x: number, y: number) {
     const candidates = new Set<number>();
-    const top = this.roads.get(roadKey(x, y, "horizontal"));
-    const bottom = this.roads.get(roadKey(x, y + 1, "horizontal"));
-    const left = this.roads.get(roadKey(x, y, "vertical"));
-    const right = this.roads.get(roadKey(x + 1, y, "vertical"));
+    const roadKeys = getAdjacentRoadKeysForCell(x, y);
+    const top = this.roads.get(roadKeys.top);
+    const bottom = this.roads.get(roadKeys.bottom);
+    const left = this.roads.get(roadKeys.left);
+    const right = this.roads.get(roadKeys.right);
 
     const collectNodes = (segment: RoadSegment | undefined) => {
       if (!segment) {
         return;
       }
 
-      if (segment.orientation === "horizontal") {
-        const a = this.nodeIdByCoord.get(nodeCoordKey(segment.x, segment.y));
-        const b = this.nodeIdByCoord.get(nodeCoordKey(segment.x + 1, segment.y));
-        if (a !== undefined) {
-          candidates.add(a);
-        }
-        if (b !== undefined) {
-          candidates.add(b);
-        }
-      } else {
-        const a = this.nodeIdByCoord.get(nodeCoordKey(segment.x, segment.y));
-        const b = this.nodeIdByCoord.get(nodeCoordKey(segment.x, segment.y + 1));
-        if (a !== undefined) {
-          candidates.add(a);
-        }
-        if (b !== undefined) {
-          candidates.add(b);
-        }
+      const [start, end] = getRoadEndpoints(segment);
+      const a = this.nodeIdByCoord.get(getRoadNodeKey(start.x, start.y));
+      const b = this.nodeIdByCoord.get(getRoadNodeKey(end.x, end.y));
+      if (a !== undefined) {
+        candidates.add(a);
+      }
+      if (b !== undefined) {
+        candidates.add(b);
       }
     };
 
@@ -749,6 +777,7 @@ export class SimWorld {
   private refreshPowerState() {
     const energizedNodes = new Set<number>();
     const queue: number[] = [];
+    let queueIndex = 0;
 
     for (const facility of this.facilities.values()) {
       const sourceBuilding = this.buildings.get(facility.buildingId);
@@ -766,8 +795,9 @@ export class SimWorld {
       }
     }
 
-    while (queue.length > 0) {
-      const nodeId = queue.shift()!;
+    while (queueIndex < queue.length) {
+      const nodeId = queue[queueIndex];
+      queueIndex += 1;
       for (const edgeId of this.adjacency[nodeId] ?? []) {
         const edge = this.edges[edgeId];
         if (!energizedNodes.has(edge.toNodeId)) {
@@ -813,7 +843,7 @@ export class SimWorld {
     roundaboutCenterX?: number,
     roundaboutCenterY?: number
   ) {
-    const key = roadKey(x, y, orientation);
+    const key = getRoadSegmentKey(x, y, orientation);
     this.roads.set(key, {
       key,
       x,
@@ -883,7 +913,7 @@ export class SimWorld {
     this.nodeIdByCoord.clear();
 
     const getNodeId = (x: number, y: number) => {
-      const key = nodeCoordKey(x, y);
+      const key = getRoadNodeKey(x, y);
       const existingId = this.nodeIdByCoord.get(key);
       if (existingId !== undefined) {
         return existingId;
@@ -897,11 +927,9 @@ export class SimWorld {
     };
 
     for (const segment of this.roads.values()) {
-      const fromNodeId = getNodeId(segment.x, segment.y);
-      const toNodeId =
-        segment.orientation === "horizontal"
-          ? getNodeId(segment.x + 1, segment.y)
-          : getNodeId(segment.x, segment.y + 1);
+      const [fromNode, toNode] = getRoadEndpoints(segment);
+      const fromNodeId = getNodeId(fromNode.x, fromNode.y);
+      const toNodeId = getNodeId(toNode.x, toNode.y);
 
       const makeEdge = (fromId: number, toId: number) => {
         const edgeId = this.edges.length;

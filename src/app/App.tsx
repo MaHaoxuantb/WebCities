@@ -335,8 +335,8 @@ export const App = () => {
 
       <header className="topbar">
         <div className="brand-block">
-          <p className="eyebrow">WebCities</p>
-          <h1>Traffic Operations View</h1>
+          <p className="eyebrow">Annopia Relax</p>
+          <h1>Web Cities (Preview)</h1>
         </div>
 
         <div className="toolbar-cluster">

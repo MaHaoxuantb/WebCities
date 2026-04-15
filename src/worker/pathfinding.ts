@@ -7,6 +7,84 @@ export interface PathNetwork {
   networkVersion: number;
 }
 
+class MinPriorityQueue {
+  private heap: Array<{ nodeId: number; distance: number }> = [];
+
+  get size() {
+    return this.heap.length;
+  }
+
+  push(nodeId: number, distance: number) {
+    this.heap.push({ nodeId, distance });
+    this.bubbleUp(this.heap.length - 1);
+  }
+
+  pop() {
+    if (this.heap.length === 0) {
+      return null;
+    }
+
+    const top = this.heap[0];
+    const last = this.heap.pop()!;
+    if (this.heap.length > 0) {
+      this.heap[0] = last;
+      this.bubbleDown(0);
+    }
+    return top;
+  }
+
+  private bubbleUp(index: number) {
+    let currentIndex = index;
+
+    while (currentIndex > 0) {
+      const parentIndex = Math.floor((currentIndex - 1) / 2);
+      if (this.heap[parentIndex].distance <= this.heap[currentIndex].distance) {
+        break;
+      }
+
+      [this.heap[parentIndex], this.heap[currentIndex]] = [
+        this.heap[currentIndex],
+        this.heap[parentIndex]
+      ];
+      currentIndex = parentIndex;
+    }
+  }
+
+  private bubbleDown(index: number) {
+    let currentIndex = index;
+
+    while (true) {
+      const leftIndex = currentIndex * 2 + 1;
+      const rightIndex = leftIndex + 1;
+      let smallestIndex = currentIndex;
+
+      if (
+        leftIndex < this.heap.length &&
+        this.heap[leftIndex].distance < this.heap[smallestIndex].distance
+      ) {
+        smallestIndex = leftIndex;
+      }
+
+      if (
+        rightIndex < this.heap.length &&
+        this.heap[rightIndex].distance < this.heap[smallestIndex].distance
+      ) {
+        smallestIndex = rightIndex;
+      }
+
+      if (smallestIndex === currentIndex) {
+        return;
+      }
+
+      [this.heap[currentIndex], this.heap[smallestIndex]] = [
+        this.heap[smallestIndex],
+        this.heap[currentIndex]
+      ];
+      currentIndex = smallestIndex;
+    }
+  }
+}
+
 const reconstructRoute = (
   originNodeId: number,
   destinationNodeId: number,
@@ -46,25 +124,26 @@ export const findRouteBetweenNodes = (
   const distances = new Array<number>(network.nodes.length).fill(Number.POSITIVE_INFINITY);
   const previousEdge = new Array<number | null>(network.nodes.length).fill(null);
   const visited = new Array<boolean>(network.nodes.length).fill(false);
+  const queue = new MinPriorityQueue();
 
   distances[originNodeId] = 0;
+  queue.push(originNodeId, 0);
 
-  for (let step = 0; step < network.nodes.length; step += 1) {
-    let currentNode = -1;
-    let bestDistance = Number.POSITIVE_INFINITY;
-
-    for (let nodeIndex = 0; nodeIndex < distances.length; nodeIndex += 1) {
-      if (!visited[nodeIndex] && distances[nodeIndex] < bestDistance) {
-        bestDistance = distances[nodeIndex];
-        currentNode = nodeIndex;
-      }
-    }
-
-    if (currentNode === -1 || currentNode === destinationNodeId) {
+  while (queue.size > 0) {
+    const next = queue.pop();
+    if (!next) {
       break;
     }
 
+    const currentNode = next.nodeId;
+    if (visited[currentNode]) {
+      continue;
+    }
+
     visited[currentNode] = true;
+    if (currentNode === destinationNodeId) {
+      break;
+    }
 
     for (const edgeId of network.adjacency[currentNode] ?? []) {
       const edge = network.edges[edgeId];
@@ -72,6 +151,7 @@ export const findRouteBetweenNodes = (
       if (candidateDistance < distances[edge.toNodeId]) {
         distances[edge.toNodeId] = candidateDistance;
         previousEdge[edge.toNodeId] = edgeId;
+        queue.push(edge.toNodeId, candidateDistance);
       }
     }
   }
