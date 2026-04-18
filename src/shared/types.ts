@@ -3,11 +3,16 @@ export type RoadDirection = "both" | "forward" | "reverse";
 export type ZoneType = "residential" | "commercial" | "industrial";
 export type ServiceKind = "power";
 export type TripPurpose = "commute" | "commercial" | "cargo" | "service";
-export type OverlayKind = "traffic" | "power" | "happiness";
+export type OverlayKind = "none" | "traffic" | "power" | "happiness";
 export type TimeScale = 0 | 1 | 2 | 3;
+export type CityStage = "bootstrap" | "town" | "logistics" | "resilience";
+export type MilestoneId =
+  | "bootstrap-power"
+  | "town-growth"
+  | "logistics-flow"
+  | "resilience-run";
 export type ToolMode =
   | "road"
-  | "junction-large"
   | "zone-residential"
   | "zone-commercial"
   | "zone-industrial"
@@ -21,8 +26,6 @@ export interface RoadSegment {
   direction: RoadDirection;
   lanes: number;
   speedLimit: number;
-  roundaboutCenterX?: number;
-  roundaboutCenterY?: number;
 }
 
 export interface RoadNode {
@@ -46,8 +49,6 @@ export interface RoadEdge {
   travelTime: number;
   blocked: boolean;
   baseTravelTime: number;
-  roundaboutCenterX?: number;
-  roundaboutCenterY?: number;
 }
 
 export interface ZoneCell {
@@ -69,6 +70,10 @@ export interface Building {
   abandoned: boolean;
   accessNodeIds: number[];
   outageTicksRemaining: number;
+  serviceReliability: number;
+  throughputScore: number;
+  productivity: number;
+  recentOutageTicks: number;
 }
 
 export interface ServiceFacility {
@@ -133,14 +138,20 @@ export interface CityStats {
   tick: number;
   population: number;
   jobs: number;
+  productiveJobs: number;
   activeTrips: number;
   queuedTrips: number;
   avgTravelTime: number;
+  tripCompletionRate: number;
+  avgServiceReliability: number;
+  congestionStress: number;
   budget: number;
   budgetIncome: number;
   roadsUpkeep: number;
   facilitiesUpkeep: number;
   budgetDelta: number;
+  positiveBudgetStreak: number;
+  debtPressure: number;
   demandResidential: number;
   demandCommercial: number;
   demandIndustrial: number;
@@ -148,6 +159,64 @@ export interface CityStats {
   poweredBuildings: number;
   totalBuildings: number;
   powerPlants: number;
+}
+
+export interface UnlockState {
+  arterialRoads: boolean;
+  denserZones: boolean;
+  advancedPowerPlants: boolean;
+  occupancyCapBonus: number;
+}
+
+export interface MilestoneConstraintProgress {
+  label: string;
+  current: number;
+  target: number;
+  comparator: "gte" | "lte";
+  complete: boolean;
+}
+
+export interface MilestoneDefinition {
+  id: MilestoneId;
+  stage: CityStage;
+  title: string;
+  summary: string;
+  primaryLabel: string;
+  primaryMetric: keyof CityStats;
+  primaryTarget: number;
+  primaryComparator: "gte" | "lte";
+  secondary: Array<{
+    label: string;
+    metric: keyof CityStats;
+    target: number;
+    comparator: "gte" | "lte";
+  }>;
+  rewardText: string;
+}
+
+export interface MilestoneProgress {
+  id: MilestoneId;
+  stage: CityStage;
+  title: string;
+  summary: string;
+  rewardText: string;
+  primary: MilestoneConstraintProgress;
+  secondary: MilestoneConstraintProgress[];
+  blockers: string[];
+  complete: boolean;
+}
+
+export interface ProgressionState {
+  currentStage: CityStage;
+  threatLevel: number;
+  pressureTier: number;
+  activeMilestoneId: MilestoneId | null;
+  completedMilestoneIds: MilestoneId[];
+  rewardLog: string[];
+  unlocks: UnlockState;
+  activeMilestone: MilestoneProgress | null;
+  score: number;
+  cityGrade: string;
 }
 
 export interface PerfStats {
@@ -176,6 +245,7 @@ export interface SimSnapshot {
   cityStats: CityStats;
   perfStats: PerfStats;
   overlay: OverlayKind;
+  progression: ProgressionState;
 }
 
 export interface ReplayCommand {
@@ -184,7 +254,6 @@ export interface ReplayCommand {
     | "editRoad"
     | "editZone"
     | "bulldozeAt"
-    | "placeLargeJunction"
     | "placeBuilding"
     | "placeService"
     | "setBudget"

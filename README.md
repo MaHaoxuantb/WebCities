@@ -8,7 +8,7 @@ Browser city simulation built with React, Pixi, and a simulation worker.
 
 - Roads create the directed graph that all commuters, freight, and maintenance crews use.
 - Congestion increases travel time, and fully loaded edges block additional trip packets from entering.
-- Roundabouts replace a four-way conflict point with a one-way ring and usually smooth queue buildup.
+- Busy intersections still matter because queues form at shared nodes before roads fully block.
 
 ### Zoning
 

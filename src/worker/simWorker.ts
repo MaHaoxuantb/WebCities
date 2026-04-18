@@ -87,14 +87,6 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
       snapshotDirty = true;
       postSnapshot();
       break;
-    case "placeLargeJunction":
-      world.placeLargeJunction(
-        message.payload.centerCellX,
-        message.payload.centerCellY
-      );
-      snapshotDirty = true;
-      postSnapshot();
-      break;
     case "bulldozeAt":
       world.bulldozeAt(
         message.payload.cellX,

@@ -24,12 +24,6 @@ type RoadTarget = {
   distance: number;
 };
 
-type RoundaboutVisual = {
-  centerX: number;
-  centerY: number;
-  utilization: number;
-};
-
 type JunctionVisual = {
   x: number;
   y: number;
@@ -43,11 +37,6 @@ type CanvasAction =
       y: number;
       orientation: Orientation;
       mode: "add" | "remove";
-    }
-  | {
-      type: "junction";
-      centerCellX: number;
-      centerCellY: number;
     }
   | {
       type: "bulldoze";
@@ -78,7 +67,6 @@ const ROAD_HIT_THRESHOLD = 0.24;
 const ROAD_OUTER_WIDTH = 12;
 const ROAD_INNER_WIDTH = 6;
 const ROAD_SEGMENT_STYLE = { cap: "butt" as const, join: "miter" as const };
-const ROAD_RING_STYLE = { cap: "round" as const, join: "round" as const };
 
 interface ThemePalette {
   sceneBackground: number;
@@ -95,6 +83,8 @@ interface ThemePalette {
   vehicleTruck: number;
   vehicleService: number;
   vehicleVan: number;
+  focusMask: number;
+  focusMaskAlpha: number;
 }
 
 const themePalette: Record<"dark" | "light", ThemePalette> = {
@@ -112,7 +102,9 @@ const themePalette: Record<"dark" | "light", ThemePalette> = {
     vehicleNeutral: 0xcfd5db,
     vehicleTruck: 0xc39554,
     vehicleService: 0x6ea6cf,
-    vehicleVan: 0xa4c27e
+    vehicleVan: 0xa4c27e,
+    focusMask: 0x05080c,
+    focusMaskAlpha: 0.56
   },
   light: {
     sceneBackground: 0xf2efe8,
@@ -128,7 +120,9 @@ const themePalette: Record<"dark" | "light", ThemePalette> = {
     vehicleNeutral: 0x4e5962,
     vehicleTruck: 0xaf7b32,
     vehicleService: 0x4a86ba,
-    vehicleVan: 0x6f9160
+    vehicleVan: 0x6f9160,
+    focusMask: 0x182026,
+    focusMaskAlpha: 0.34
   }
 };
 
@@ -137,6 +131,9 @@ const zonePalette: Record<ZoneType, number> = {
   commercial: 0x7085a5,
   industrial: 0x9a7d5d
 };
+
+const TRAFFIC_FOCUS_THRESHOLD = 0.58;
+const HAPPINESS_FOCUS_THRESHOLD = 0.62;
 
 const pickRoadTarget = (gridX: number, gridY: number): RoadTarget => {
   const cellX = Math.floor(gridX);
@@ -205,7 +202,8 @@ const drawRoadStroke = (
   scene: Graphics,
   road: SimSnapshot["roads"][number],
   width: number,
-  color: number
+  color: number,
+  alpha = 1
 ) => {
   const [from, to] = getRoadEndpoints(road);
   scene
@@ -214,51 +212,56 @@ const drawRoadStroke = (
     .stroke({
       width,
       color,
-      alpha: 1,
+      alpha,
       ...ROAD_SEGMENT_STYLE
     });
 };
 
-const detectRoundabouts = (
-  roads: SimSnapshot["roads"],
-  utilizationByKey: Map<string, number>
+const getBuildingBaseColor = (
+  building: SimSnapshot["buildings"][number],
+  palette: ThemePalette
 ) => {
-  const roadKeys = new Set(
-    roads.map((road) => getRoadSegmentKey(road.x, road.y, road.orientation))
-  );
-  const roundabouts: RoundaboutVisual[] = [];
-
-  for (let centerX = 1; centerX < WORLD_WIDTH; centerX += 1) {
-    for (let centerY = 1; centerY < WORLD_HEIGHT; centerY += 1) {
-      const ringSegments = [
-        { orientation: "horizontal" as const, x: centerX - 1, y: centerY - 1 },
-        { orientation: "horizontal" as const, x: centerX, y: centerY - 1 },
-        { orientation: "horizontal" as const, x: centerX - 1, y: centerY + 1 },
-        { orientation: "horizontal" as const, x: centerX, y: centerY + 1 },
-        { orientation: "vertical" as const, x: centerX - 1, y: centerY - 1 },
-        { orientation: "vertical" as const, x: centerX - 1, y: centerY },
-        { orientation: "vertical" as const, x: centerX + 1, y: centerY - 1 },
-        { orientation: "vertical" as const, x: centerX + 1, y: centerY }
-      ];
-
-      if (
-        !ringSegments.every((segment) =>
-          roadKeys.has(getRoadSegmentKey(segment.x, segment.y, segment.orientation))
-        )
-      ) {
-        continue;
-      }
-
-      const utilization =
-        ringSegments.reduce((sum, segment) => {
-          return sum + (utilizationByKey.get(getRoadEdgeKey(segment)) ?? 0);
-        }, 0) / ringSegments.length;
-
-      roundabouts.push({ centerX, centerY, utilization });
-    }
+  if (building.kind === "powerPlant") {
+    return palette.powerPlant;
   }
 
-  return roundabouts;
+  return zonePalette[building.kind as ZoneType];
+};
+
+const drawBuildingBlock = (
+  scene: Graphics,
+  building: SimSnapshot["buildings"][number],
+  color: number,
+  alpha: number
+) => {
+  scene
+    .roundRect(
+      building.cellX * CELL_SIZE + 5,
+      building.cellY * CELL_SIZE + 5,
+      CELL_SIZE - 10,
+      CELL_SIZE - 10,
+      7
+    )
+    .fill({ color, alpha });
+};
+
+const highlightBuilding = (
+  scene: Graphics,
+  building: SimSnapshot["buildings"][number],
+  color: number,
+  fillAlpha = 0.9
+) => {
+  scene
+    .roundRect(
+      building.cellX * CELL_SIZE + 2,
+      building.cellY * CELL_SIZE + 2,
+      CELL_SIZE - 4,
+      CELL_SIZE - 4,
+      10
+    )
+    .stroke({ width: 3.5, color, alpha: 0.95 });
+
+  drawBuildingBlock(scene, building, color, fillAlpha);
 };
 
 const detectJunctions = (
@@ -367,6 +370,7 @@ export const CityRenderer = ({
     let panStartX = 0;
     let panStartY = 0;
     let dragDistance = 0;
+    let activePointerId: number | null = null;
 
     const screenToWorld = (screenX: number, screenY: number) => ({
       x: (screenX - camera.x) / camera.zoom,
@@ -419,6 +423,7 @@ export const CityRenderer = ({
       }
 
       const junctions = detectJunctions(current.roads, roadUtilization);
+      const activeFocus = overlayRef.current !== "none";
 
       for (const zone of current.zones) {
         scene
@@ -427,60 +432,17 @@ export const CityRenderer = ({
       }
 
       for (const road of current.roads) {
-        const utilization = roadUtilization.get(getRoadEdgeKey(road)) ?? 0;
-        const roadColor =
-          overlayRef.current === "traffic"
-            ? overlayRoadColor(utilization)
-            : palette.roadNeutral;
-
         drawRoadStroke(scene, road, ROAD_OUTER_WIDTH, palette.roadShell);
-        drawRoadStroke(scene, road, ROAD_INNER_WIDTH, roadColor);
+        drawRoadStroke(scene, road, ROAD_INNER_WIDTH, palette.roadNeutral);
       }
 
       for (const junction of junctions) {
-        const junctionColor =
-          overlayRef.current === "traffic"
-            ? overlayRoadColor(junction.utilization)
-            : palette.roadNeutral;
-
         scene
           .circle(junction.x * CELL_SIZE, junction.y * CELL_SIZE, ROAD_OUTER_WIDTH / 2)
           .fill(palette.roadShell);
         scene
           .circle(junction.x * CELL_SIZE, junction.y * CELL_SIZE, ROAD_INNER_WIDTH / 2)
-          .fill(junctionColor);
-      }
-
-      for (const roundabout of detectRoundabouts(current.roads, roadUtilization)) {
-        const ringColor =
-          overlayRef.current === "traffic"
-            ? overlayRoadColor(roundabout.utilization)
-            : palette.roadNeutral;
-
-        scene
-          .circle(
-            roundabout.centerX * CELL_SIZE,
-            roundabout.centerY * CELL_SIZE,
-            CELL_SIZE * 0.95
-          )
-          .stroke({
-            width: ROAD_OUTER_WIDTH + 2,
-            color: palette.roadShell,
-            alpha: 1,
-            ...ROAD_RING_STYLE
-          });
-        scene
-          .circle(
-            roundabout.centerX * CELL_SIZE,
-            roundabout.centerY * CELL_SIZE,
-            CELL_SIZE * 0.95
-          )
-          .stroke({
-            width: ROAD_INNER_WIDTH + 2,
-            color: ringColor,
-            alpha: 1,
-            ...ROAD_RING_STYLE
-          });
+          .fill(palette.roadNeutral);
       }
 
       for (const node of current.nodes) {
@@ -498,26 +460,8 @@ export const CityRenderer = ({
       }
 
       for (const building of current.buildings) {
-        let color = palette.buildingNeutral;
-        if (building.kind === "powerPlant") {
-          color = palette.powerPlant;
-        } else if (overlayRef.current === "power") {
-          color = building.powered ? palette.powered : palette.unpowered;
-        } else if (overlayRef.current === "happiness") {
-          color = happinessColor(building.happiness);
-        } else if (building.kind in zonePalette) {
-          color = zonePalette[building.kind as ZoneType];
-        }
-
-        scene
-          .roundRect(
-            building.cellX * CELL_SIZE + 5,
-            building.cellY * CELL_SIZE + 5,
-            CELL_SIZE - 10,
-            CELL_SIZE - 10,
-            7
-          )
-          .fill({ color, alpha: building.abandoned ? 0.3 : 0.82 });
+        const color = getBuildingBaseColor(building, palette);
+        drawBuildingBlock(scene, building, color, building.abandoned ? 0.3 : 0.82);
 
         if (!building.powered && building.kind !== "powerPlant") {
           scene
@@ -563,6 +507,102 @@ export const CityRenderer = ({
           .circle(vehicle.x * CELL_SIZE, vehicle.y * CELL_SIZE, radius)
           .fill({ color: fill, alpha: 0.95 });
       }
+
+      if (!activeFocus) {
+        return;
+      }
+
+      scene
+        .rect(0, 0, CELL_SIZE * WORLD_WIDTH, CELL_SIZE * WORLD_HEIGHT)
+        .fill({ color: palette.focusMask, alpha: palette.focusMaskAlpha });
+
+      if (overlayRef.current === "traffic") {
+        for (const road of current.roads) {
+          const utilization = roadUtilization.get(getRoadEdgeKey(road)) ?? 0;
+          if (utilization < TRAFFIC_FOCUS_THRESHOLD) {
+            continue;
+          }
+
+          const color = overlayRoadColor(utilization);
+          drawRoadStroke(scene, road, ROAD_OUTER_WIDTH + 5, color, 0.24);
+          drawRoadStroke(scene, road, ROAD_INNER_WIDTH + 3, color, 1);
+        }
+
+        for (const junction of junctions) {
+          if (junction.utilization < TRAFFIC_FOCUS_THRESHOLD) {
+            continue;
+          }
+
+          const color = overlayRoadColor(junction.utilization);
+          scene
+            .circle(junction.x * CELL_SIZE, junction.y * CELL_SIZE, ROAD_OUTER_WIDTH / 2 + 4)
+            .fill({ color, alpha: 0.22 });
+          scene
+            .circle(junction.x * CELL_SIZE, junction.y * CELL_SIZE, ROAD_INNER_WIDTH / 2 + 2)
+            .fill({ color, alpha: 1 });
+        }
+
+        for (const node of current.nodes) {
+          if (node.queueLength <= 0) {
+            continue;
+          }
+
+          scene
+            .circle(
+              node.x * CELL_SIZE,
+              node.y * CELL_SIZE,
+              Math.min(18, 7 + node.queueLength)
+            )
+            .fill({ color: palette.queue, alpha: 0.78 });
+        }
+
+        return;
+      }
+
+      if (overlayRef.current === "power") {
+        for (const building of current.buildings) {
+          if (building.kind === "powerPlant" || building.powered) {
+            continue;
+          }
+
+          highlightBuilding(scene, building, palette.unpowered, 0.9);
+          scene
+            .moveTo(building.cellX * CELL_SIZE + 10, building.cellY * CELL_SIZE + 10)
+            .lineTo(
+              building.cellX * CELL_SIZE + CELL_SIZE - 10,
+              building.cellY * CELL_SIZE + CELL_SIZE - 10
+            )
+            .stroke({ width: 3, color: palette.outageCross, alpha: 1 });
+          scene
+            .moveTo(
+              building.cellX * CELL_SIZE + CELL_SIZE - 10,
+              building.cellY * CELL_SIZE + 10
+            )
+            .lineTo(
+              building.cellX * CELL_SIZE + 10,
+              building.cellY * CELL_SIZE + CELL_SIZE - 10
+            )
+            .stroke({ width: 3, color: palette.outageCross, alpha: 1 });
+        }
+
+        return;
+      }
+
+      for (const building of current.buildings) {
+        if (
+          building.kind === "powerPlant" ||
+          (!building.abandoned && building.happiness >= HAPPINESS_FOCUS_THRESHOLD)
+        ) {
+          continue;
+        }
+
+        highlightBuilding(
+          scene,
+          building,
+          happinessColor(building.happiness),
+          building.abandoned ? 0.96 : 0.88
+        );
+      }
     };
 
     const scheduleRender = () => {
@@ -582,6 +622,7 @@ export const CityRenderer = ({
     };
 
     const handlePointerDown = (event: PointerEvent) => {
+      activePointerId = event.pointerId;
       const wantsPan =
         event.button === 1 ||
         event.altKey ||
@@ -613,6 +654,12 @@ export const CityRenderer = ({
     };
 
     const handlePointerUp = (event: PointerEvent) => {
+      if (activePointerId === null || event.pointerId !== activePointerId) {
+        return;
+      }
+
+      activePointerId = null;
+
       if (isPanning) {
         isPanning = false;
         return;
@@ -664,17 +711,6 @@ export const CityRenderer = ({
         return;
       }
 
-      if (currentTool === "junction-large") {
-        const nodeX = Math.round(gridX);
-        const nodeY = Math.round(gridY);
-        onActionRef.current({
-          type: "junction",
-          centerCellX: nodeX,
-          centerCellY: nodeY
-        });
-        return;
-      }
-
       if (currentTool === "service-power") {
         onActionRef.current({
           type: "service",
@@ -692,6 +728,16 @@ export const CityRenderer = ({
             ? "commercial"
             : "industrial";
       onActionRef.current({ type: "zone", x: cellX, y: cellY, zoneType });
+    };
+
+    const handlePointerCancel = (event: PointerEvent) => {
+      if (event.pointerId !== activePointerId) {
+        return;
+      }
+
+      activePointerId = null;
+      isPanning = false;
+      dragDistance = 0;
     };
 
     const handleWheel = (event: WheelEvent) => {
@@ -759,6 +805,7 @@ export const CityRenderer = ({
       host.addEventListener("pointerdown", handlePointerDown);
       window.addEventListener("pointermove", handlePointerMove);
       window.addEventListener("pointerup", handlePointerUp);
+      window.addEventListener("pointercancel", handlePointerCancel);
       host.addEventListener("wheel", handleWheel, { passive: false });
       window.addEventListener("keydown", handleKeyDown);
       window.addEventListener("keyup", handleKeyUp);
@@ -793,6 +840,7 @@ export const CityRenderer = ({
       host.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
       host.removeEventListener("wheel", handleWheel);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);

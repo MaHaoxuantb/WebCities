@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { SimWorld } from "../src/worker/world";
-import { findBestRoute } from "../src/worker/pathfinding";
 
 const buildingIdAt = (world: SimWorld, cellX: number, cellY: number) =>
   world
@@ -72,9 +71,10 @@ describe("SimWorld", () => {
     const restored = SimWorld.fromSave(save);
 
     expect(restored.serialize()).toMatchObject({
-      version: 1,
+      version: 2,
       roads: save.roads,
-      zones: save.zones
+      zones: save.zones,
+      progression: save.progression
     });
     expect(restored.debugState().buildings).toHaveLength(world.debugState().buildings.length);
   });
@@ -131,6 +131,66 @@ describe("SimWorld", () => {
     );
   });
 
+  it("tracks progression data in snapshots", () => {
+    const world = new SimWorld(10, 10, 123);
+    world.editRoad(0, 1, "horizontal", "add");
+    world.editRoad(1, 1, "horizontal", "add");
+    world.editRoad(2, 1, "horizontal", "add");
+    world.editZone(0, 0, "residential");
+    world.editZone(1, 0, "residential");
+    world.placeService(2, 0, "power");
+
+    for (let tick = 0; tick < 80; tick += 1) {
+      world.tickOnce();
+    }
+
+    const snapshot = world.getSnapshot();
+    expect(snapshot.progression.activeMilestoneId).toBeDefined();
+    expect(snapshot.progression.activeMilestone).not.toBeNull();
+    expect(snapshot.cityStats.tripCompletionRate).toBeGreaterThanOrEqual(0);
+    expect(snapshot.cityStats.avgServiceReliability).toBeGreaterThanOrEqual(0);
+  });
+
+  it("unlocks denser zoning after the bootstrap milestone", () => {
+    const world = new SimWorld(16, 16, 123);
+    world.editRoad(0, 1, "horizontal", "add");
+    world.editRoad(1, 1, "horizontal", "add");
+    world.editRoad(2, 1, "horizontal", "add");
+    world.editRoad(3, 1, "horizontal", "add");
+    world.editRoad(4, 1, "horizontal", "add");
+    world.editRoad(5, 1, "horizontal", "add");
+    world.editRoad(6, 1, "horizontal", "add");
+    world.placeService(6, 0, "power");
+    world.editZone(0, 0, "residential");
+    world.editZone(1, 0, "residential");
+    world.editZone(2, 0, "residential");
+    world.editZone(3, 0, "residential");
+    world.editZone(4, 0, "residential");
+    world.editZone(5, 0, "residential");
+
+    for (let tick = 0; tick < 60; tick += 1) {
+      world.tickOnce();
+    }
+
+    const snapshot = world.getSnapshot();
+    expect(snapshot.progression.completedMilestoneIds).toContain("bootstrap-power");
+    expect(snapshot.progression.unlocks.denserZones).toBe(true);
+  });
+
+  it("raises debt pressure when the budget stays negative", () => {
+    const world = new SimWorld(12, 12, 123);
+    world.placeService(0, 0, "power");
+    world.placeService(3, 3, "power");
+    world.placeService(6, 6, "power");
+    world.setBudget(-3000);
+
+    for (let tick = 0; tick < 120; tick += 1) {
+      world.tickOnce();
+    }
+
+    expect(world.getSnapshot().cityStats.debtPressure).toBeGreaterThan(0);
+  });
+
   it("interpolates visible vehicle positions between sim ticks", () => {
     const world = new SimWorld(8, 8, 123);
     world.editRoad(0, 1, "horizontal", "add");
@@ -154,63 +214,4 @@ describe("SimWorld", () => {
     expect(after.x).toBeGreaterThan(before.x);
   });
 
-  it("places a roundabout ring around the four cells adjacent to an intersection", () => {
-    const world = new SimWorld(12, 12, 123);
-    world.placeLargeJunction(4, 4);
-    const roads = world.getSnapshot().roads;
-    expect(roads).toHaveLength(8);
-    expect(
-      roads.some(
-        (road) => road.x === 3 && road.y === 3 && road.orientation === "horizontal"
-      )
-    ).toBe(true);
-    expect(
-      roads.some(
-        (road) => road.x === 4 && road.y === 3 && road.orientation === "horizontal"
-      )
-    ).toBe(true);
-    expect(
-      roads.some(
-        (road) => road.x === 3 && road.y === 5 && road.orientation === "horizontal"
-      )
-    ).toBe(true);
-    expect(
-      roads.some(
-        (road) => road.x === 5 && road.y === 4 && road.orientation === "vertical"
-      )
-    ).toBe(true);
-
-    const blocked = new SimWorld(12, 12, 123);
-    blocked.editZone(3, 3, "residential");
-    blocked.placeLargeJunction(4, 4);
-    expect(blocked.getSnapshot().roads).toHaveLength(0);
-  });
-
-  it("routes traffic around the roundabout in one direction", () => {
-    const world = new SimWorld(12, 12, 123);
-    world.placeLargeJunction(4, 4);
-
-    const topNode = world.nodes.find((node) => node.x === 4 && node.y === 3);
-    const rightNode = world.nodes.find((node) => node.x === 5 && node.y === 4);
-    expect(topNode).toBeDefined();
-    expect(rightNode).toBeDefined();
-
-    const clockwise = findBestRoute(
-      world,
-      [topNode!.id],
-      [rightNode!.id],
-      new Map()
-    );
-    const reverse = findBestRoute(
-      world,
-      [rightNode!.id],
-      [topNode!.id],
-      new Map()
-    );
-
-    expect(clockwise).not.toBeNull();
-    expect(reverse).not.toBeNull();
-    expect(clockwise!.edgeIds.length).toBe(2);
-    expect(reverse!.edgeIds.length).toBeGreaterThan(clockwise!.edgeIds.length);
-  });
 });

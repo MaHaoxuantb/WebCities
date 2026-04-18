@@ -8,7 +8,7 @@ import type {
   TimeScale,
   ZoneType
 } from "./types";
-import type { SaveGameV1 } from "./save";
+import type { SaveGameV2 } from "./save";
 
 export interface WorkerEnvelope<TType extends string, TPayload = undefined> {
   version: 1;
@@ -46,13 +46,6 @@ export type MainToWorkerMessage =
       }
     >
   | WorkerEnvelope<
-      "placeLargeJunction",
-      {
-        centerCellX: number;
-        centerCellY: number;
-      }
-    >
-  | WorkerEnvelope<
       "placeBuilding",
       {
         x: number;
@@ -68,7 +61,7 @@ export type MainToWorkerMessage =
   | WorkerEnvelope<"setTimeScale", { timeScale: TimeScale }>
   | WorkerEnvelope<"requestOverlay", { overlay: OverlayKind }>
   | WorkerEnvelope<"saveGame", { slotKey: string }>
-  | WorkerEnvelope<"loadGame", { saveGame: SaveGameV1 }>
+  | WorkerEnvelope<"loadGame", { saveGame: SaveGameV2 }>
   | WorkerEnvelope<"requestSnapshot", undefined>;
 
 export type WorkerToMainMessage =
@@ -77,7 +70,7 @@ export type WorkerToMainMessage =
   | WorkerEnvelope<"cityStats", SimSnapshot["cityStats"]>
   | WorkerEnvelope<"perfStats", SimSnapshot["perfStats"]>
   | WorkerEnvelope<"notification", NotificationMessage>
-  | WorkerEnvelope<"saveReady", { slotKey: string; saveGame: SaveGameV1 }>
+  | WorkerEnvelope<"saveReady", { slotKey: string; saveGame: SaveGameV2 }>
   | WorkerEnvelope<"replayLog", { commands: ReplayCommand[] }>;
 
 export const toWorkerMessage = <TType extends MainToWorkerMessage["type"]>(

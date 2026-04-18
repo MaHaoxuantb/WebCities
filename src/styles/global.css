@@ -514,6 +514,29 @@ h2 {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  z-index: 1;
+}
+
+.viewport::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    background 140ms ease;
+  z-index: 2;
+}
+
+.viewport.overlay-active::after {
+  background: rgba(16, 20, 24, 0.22);
+  opacity: 1;
+}
+
+.viewport.overlay-active .viewport-header {
+  opacity: 0.42;
 }
 
 .viewport-header {
@@ -526,6 +549,7 @@ h2 {
   right: 0.8rem;
   z-index: 3;
   pointer-events: none;
+  transition: opacity 140ms ease;
 }
 
 .viewport-chip {
@@ -602,7 +626,7 @@ h2 {
   place-items: center;
   background: var(--overlay-bg);
   backdrop-filter: blur(2px);
-  z-index: 5;
+  z-index: 8;
 }
 
 .startup-card {

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { ReplayCommand } from "./types";
+import type { ProgressionState, ReplayCommand } from "./types";
 
 const roadSegmentSchema = z.object({
   key: z.string(),
@@ -11,9 +11,7 @@ const roadSegmentSchema = z.object({
     .union([z.literal("both"), z.literal("forward"), z.literal("reverse")])
     .default("both"),
   lanes: z.number(),
-  speedLimit: z.number(),
-  roundaboutCenterX: z.number().optional(),
-  roundaboutCenterY: z.number().optional()
+  speedLimit: z.number()
 });
 
 const zoneSchema = z.object({
@@ -43,7 +41,11 @@ const buildingSchema = z.object({
   happiness: z.number(),
   abandoned: z.boolean(),
   accessNodeIds: z.array(z.number()),
-  outageTicksRemaining: z.number()
+  outageTicksRemaining: z.number(),
+  serviceReliability: z.number(),
+  throughputScore: z.number(),
+  productivity: z.number(),
+  recentOutageTicks: z.number()
 });
 
 const facilitySchema = z.object({
@@ -93,13 +95,81 @@ const powerJobSchema = z.object({
   ])
 });
 
+const unlockStateSchema = z.object({
+  arterialRoads: z.boolean(),
+  denserZones: z.boolean(),
+  advancedPowerPlants: z.boolean(),
+  occupancyCapBonus: z.number()
+});
+
+const milestoneConstraintProgressSchema = z.object({
+  label: z.string(),
+  current: z.number(),
+  target: z.number(),
+  comparator: z.union([z.literal("gte"), z.literal("lte")]),
+  complete: z.boolean()
+});
+
+const milestoneProgressSchema = z.object({
+  id: z.union([
+    z.literal("bootstrap-power"),
+    z.literal("town-growth"),
+    z.literal("logistics-flow"),
+    z.literal("resilience-run")
+  ]),
+  stage: z.union([
+    z.literal("bootstrap"),
+    z.literal("town"),
+    z.literal("logistics"),
+    z.literal("resilience")
+  ]),
+  title: z.string(),
+  summary: z.string(),
+  rewardText: z.string(),
+  primary: milestoneConstraintProgressSchema,
+  secondary: z.array(milestoneConstraintProgressSchema),
+  blockers: z.array(z.string()),
+  complete: z.boolean()
+});
+
+const progressionStateSchema = z.object({
+  currentStage: z.union([
+    z.literal("bootstrap"),
+    z.literal("town"),
+    z.literal("logistics"),
+    z.literal("resilience")
+  ]),
+  threatLevel: z.number(),
+  pressureTier: z.number(),
+  activeMilestoneId: z
+    .union([
+      z.literal("bootstrap-power"),
+      z.literal("town-growth"),
+      z.literal("logistics-flow"),
+      z.literal("resilience-run")
+    ])
+    .nullable(),
+  completedMilestoneIds: z.array(
+    z.union([
+      z.literal("bootstrap-power"),
+      z.literal("town-growth"),
+      z.literal("logistics-flow"),
+      z.literal("resilience-run")
+    ])
+  ),
+  rewardLog: z.array(z.string()),
+  unlocks: unlockStateSchema,
+  activeMilestone: milestoneProgressSchema.nullable(),
+  score: z.number(),
+  cityGrade: z.string()
+}) satisfies z.ZodType<ProgressionState>;
+
 const replayCommandSchema = z.object({
   tick: z.number(),
   command: z.union([
     z.literal("editRoad"),
     z.literal("editZone"),
     z.literal("bulldozeAt"),
-    z.literal("placeLargeJunction"),
     z.literal("placeBuilding"),
     z.literal("placeService"),
     z.literal("setBudget"),
@@ -108,8 +178,8 @@ const replayCommandSchema = z.object({
   payload: z.unknown()
 }) satisfies z.ZodType<ReplayCommand>;
 
-export const saveGameV1Schema = z.object({
-  version: z.literal(1),
+export const saveGameV2Schema = z.object({
+  version: z.literal(2),
   width: z.number(),
   height: z.number(),
   tick: z.number(),
@@ -117,6 +187,7 @@ export const saveGameV1Schema = z.object({
   budget: z.number(),
   timeScale: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
   overlay: z.union([
+    z.literal("none"),
     z.literal("traffic"),
     z.literal("power"),
     z.literal("happiness")
@@ -134,10 +205,16 @@ export const saveGameV1Schema = z.object({
   serviceFacilities: z.array(facilitySchema),
   activeTrips: z.array(tripPacketSchema),
   powerJobs: z.array(powerJobSchema),
-  replayLog: z.array(replayCommandSchema)
+  replayLog: z.array(replayCommandSchema),
+  progression: progressionStateSchema,
+  positiveBudgetStreak: z.number(),
+  longestPositiveBudgetStreak: z.number(),
+  tripAttemptsWindow: z.number(),
+  tripCompletionsWindow: z.number(),
+  tripFailuresWindow: z.number()
 });
 
-export type SaveGameV1 = z.infer<typeof saveGameV1Schema>;
+export type SaveGameV2 = z.infer<typeof saveGameV2Schema>;
 
-export const parseSaveGame = (input: unknown): SaveGameV1 =>
-  saveGameV1Schema.parse(input);
+export const parseSaveGame = (input: unknown): SaveGameV2 =>
+  saveGameV2Schema.parse(input);

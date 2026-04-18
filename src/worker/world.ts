@@ -1,10 +1,18 @@
 import {
+  ARTERIAL_ROAD_LANES,
+  ARTERIAL_ROAD_SPEED,
+  BASE_POWER_PLANT_COST,
+  BASE_ROAD_BUILD_COST,
+  BASE_ZONE_COST,
   BUILDING_UPDATE_INTERVAL,
+  CITY_STAGE_ORDER,
   EDGE_CAPACITY_PER_LANE,
   EDGE_STORAGE_PER_LANE,
+  INITIAL_UNLOCKS,
   LOCAL_ROAD_LANES,
   LOCAL_ROAD_SPEED,
   MAX_VISIBLE_VEHICLES,
+  MILESTONE_DEFINITIONS,
   OUTAGE_CHECK_INTERVAL,
   SIM_TICK_MS,
   TRIP_GENERATION_INTERVAL,
@@ -16,16 +24,20 @@ import {
   getRoadNodeKey,
   getRoadSegmentKey
 } from "../shared/roadGeometry";
-import { parseSaveGame, type SaveGameV1 } from "../shared/save";
+import { parseSaveGame, type SaveGameV2 } from "../shared/save";
 import { createRng, type SeededRng } from "../shared/rng";
 import type {
   Building,
   CityStats,
+  MilestoneConstraintProgress,
+  MilestoneDefinition,
+  MilestoneProgress,
   NotificationMessage,
   OverlayKind,
   Orientation,
   PerfStats,
   PowerJob,
+  ProgressionState,
   ReplayCommand,
   RoadDirection,
   RoadEdge,
@@ -38,6 +50,7 @@ import type {
   TimeScale,
   TripPacket,
   TripPurpose,
+  UnlockState,
   VisibleVehicle,
   ZoneCell,
   ZoneType
@@ -50,6 +63,12 @@ interface WorldIds {
   tripId: number;
   powerJobId: number;
   notificationId: number;
+}
+
+interface BudgetBreakdown {
+  populationIncome: number;
+  roadsUpkeep: number;
+  facilitiesUpkeep: number;
 }
 
 const clamp = (value: number, min: number, max: number) =>
@@ -65,17 +84,45 @@ const defaultIds = (): WorldIds => ({
   notificationId: 1
 });
 
-const baseJobsForZone = (zoneType: ZoneType) => {
+const cloneUnlocks = (unlocks: UnlockState): UnlockState => ({ ...unlocks });
+
+const compareMetric = (
+  current: number,
+  target: number,
+  comparator: "gte" | "lte"
+) => (comparator === "gte" ? current >= target : current <= target);
+
+const formatMetric = (value: number) =>
+  value >= 1 ? Math.round(value) : Number(value.toFixed(2));
+
+const defaultProgression = (): ProgressionState => ({
+  currentStage: "bootstrap",
+  threatLevel: 0,
+  pressureTier: 1,
+  activeMilestoneId: MILESTONE_DEFINITIONS[0]?.id ?? null,
+  completedMilestoneIds: [],
+  rewardLog: [],
+  unlocks: cloneUnlocks(INITIAL_UNLOCKS),
+  activeMilestone: null,
+  score: 0,
+  cityGrade: "D"
+});
+
+const getBaseJobsForZone = (zoneType: ZoneType, unlocks: UnlockState) => {
+  const multiplier = unlocks.denserZones ? 1.35 : 1;
   if (zoneType === "commercial") {
-    return 8;
+    return Math.round(8 * multiplier);
   }
 
   if (zoneType === "industrial") {
-    return 14;
+    return Math.round(14 * multiplier);
   }
 
   return 0;
 };
+
+const getResidentialSeedOccupancy = (unlocks: UnlockState) =>
+  unlocks.denserZones ? 6 : 4;
 
 const spriteTypeForPurpose = (
   purpose: TripPurpose
@@ -95,14 +142,21 @@ const spriteTypeForPurpose = (
   return "car";
 };
 
-const JUNCTION_LANES = LOCAL_ROAD_LANES;
-const JUNCTION_SPEED = 1.05;
-
-interface BudgetBreakdown {
-  populationIncome: number;
-  roadsUpkeep: number;
-  facilitiesUpkeep: number;
-}
+const cityGradeForScore = (score: number) => {
+  if (score >= 460) {
+    return "S";
+  }
+  if (score >= 360) {
+    return "A";
+  }
+  if (score >= 270) {
+    return "B";
+  }
+  if (score >= 180) {
+    return "C";
+  }
+  return "D";
+};
 
 export class SimWorld {
   width: number;
@@ -111,7 +165,7 @@ export class SimWorld {
   tick = 0;
   budget = 2500;
   timeScale: TimeScale = 1;
-  overlay: OverlayKind = "traffic";
+  overlay: OverlayKind = "none";
   networkVersion = 0;
   lastTickMs = 0;
 
@@ -128,6 +182,13 @@ export class SimWorld {
   private readonly activeTrips = new Map<number, TripPacket>();
   private readonly pendingNotifications: NotificationMessage[] = [];
 
+  private progression: ProgressionState = defaultProgression();
+  private positiveBudgetStreak = 0;
+  private longestPositiveBudgetStreak = 0;
+  private tripAttemptsWindow = 0;
+  private tripCompletionsWindow = 0;
+  private tripFailuresWindow = 0;
+
   private rng: SeededRng;
   private readonly nodeIdByCoord = new Map<string, number>();
 
@@ -140,6 +201,10 @@ export class SimWorld {
     this.height = height;
     this.seed = seed;
     this.rng = createRng(seed);
+    this.progression.activeMilestone = this.buildMilestoneProgress(
+      MILESTONE_DEFINITIONS[0],
+      this.computeStats()
+    );
   }
 
   static fromSave(input: unknown) {
@@ -152,6 +217,18 @@ export class SimWorld {
     world.overlay = save.overlay;
     world.ids = save.nextIds;
     world.rng = createRng(save.seed + save.tick);
+    world.progression = {
+      ...save.progression,
+      unlocks: cloneUnlocks(save.progression.unlocks),
+      rewardLog: [...save.progression.rewardLog],
+      completedMilestoneIds: [...save.progression.completedMilestoneIds],
+      activeMilestone: save.progression.activeMilestone
+    };
+    world.positiveBudgetStreak = save.positiveBudgetStreak;
+    world.longestPositiveBudgetStreak = save.longestPositiveBudgetStreak;
+    world.tripAttemptsWindow = save.tripAttemptsWindow;
+    world.tripCompletionsWindow = save.tripCompletionsWindow;
+    world.tripFailuresWindow = save.tripFailuresWindow;
 
     for (const road of save.roads) {
       world.roads.set(road.key, road);
@@ -180,12 +257,16 @@ export class SimWorld {
 
     world.replayLog.push(...save.replayLog);
     world.rebuildGraph();
+    world.syncUnlockedInfrastructure();
+    world.evaluateProgression();
     return world;
   }
 
-  serialize(): SaveGameV1 {
+  serialize(): SaveGameV2 {
+    this.evaluateProgression();
+
     return {
-      version: 1,
+      version: 2,
       width: this.width,
       height: this.height,
       tick: this.tick,
@@ -200,7 +281,13 @@ export class SimWorld {
       serviceFacilities: this.getFacilities(),
       activeTrips: this.getActiveTrips(),
       powerJobs: this.getPowerJobs(),
-      replayLog: [...this.replayLog]
+      replayLog: [...this.replayLog],
+      progression: this.progression,
+      positiveBudgetStreak: this.positiveBudgetStreak,
+      longestPositiveBudgetStreak: this.longestPositiveBudgetStreak,
+      tripAttemptsWindow: this.tripAttemptsWindow,
+      tripCompletionsWindow: this.tripCompletionsWindow,
+      tripFailuresWindow: this.tripFailuresWindow
     };
   }
 
@@ -211,7 +298,10 @@ export class SimWorld {
   }
 
   getSnapshot(simulationAlpha = 0): SimSnapshot {
-    const snapshot: SimSnapshot = {
+    const cityStats = this.computeStats();
+    const progression = this.evaluateProgression(cityStats);
+
+    return {
       tick: this.tick,
       timeScale: this.timeScale,
       simulationAlpha,
@@ -222,12 +312,11 @@ export class SimWorld {
       buildings: this.getBuildings(),
       services: this.getFacilities(),
       vehicles: this.sampleVisibleVehicles(simulationAlpha),
-      cityStats: this.computeStats(),
+      cityStats,
       perfStats: this.computePerfStats(),
-      overlay: this.overlay
+      overlay: this.overlay,
+      progression
     };
-
-    return snapshot;
   }
 
   setOverlay(overlay: OverlayKind) {
@@ -242,89 +331,6 @@ export class SimWorld {
   setTimeScale(timeScale: TimeScale) {
     this.timeScale = timeScale;
     this.recordReplay("setTimeScale", { timeScale });
-  }
-
-  placeLargeJunction(centerCellX: number, centerCellY: number) {
-    if (
-      centerCellX <= 0 ||
-      centerCellY <= 0 ||
-      centerCellX >= this.width ||
-      centerCellY >= this.height
-    ) {
-      this.pushNotification(
-        "Roundabout must sit on an interior intersection so it can use the four adjacent cells.",
-        "warning"
-      );
-      return;
-    }
-
-    const left = centerCellX - 1;
-    const top = centerCellY - 1;
-
-    if (!this.isAreaClear(left, top, 2)) {
-      this.pushNotification(
-        "Clear the four adjacent cells before placing a roundabout.",
-        "warning"
-      );
-      return;
-    }
-
-    this.roads.delete(getRoadSegmentKey(centerCellX - 1, centerCellY, "horizontal"));
-    this.roads.delete(getRoadSegmentKey(centerCellX, centerCellY, "horizontal"));
-    this.roads.delete(getRoadSegmentKey(centerCellX, centerCellY - 1, "vertical"));
-    this.roads.delete(getRoadSegmentKey(centerCellX, centerCellY, "vertical"));
-
-    this.upsertRoadSegment(left, top, "horizontal", JUNCTION_LANES, JUNCTION_SPEED, "forward", centerCellX, centerCellY);
-    this.upsertRoadSegment(centerCellX, top, "horizontal", JUNCTION_LANES, JUNCTION_SPEED, "forward", centerCellX, centerCellY);
-    this.upsertRoadSegment(
-      left,
-      centerCellY + 1,
-      "horizontal",
-      JUNCTION_LANES,
-      JUNCTION_SPEED,
-      "reverse",
-      centerCellX,
-      centerCellY
-    );
-    this.upsertRoadSegment(
-      centerCellX,
-      centerCellY + 1,
-      "horizontal",
-      JUNCTION_LANES,
-      JUNCTION_SPEED,
-      "reverse",
-      centerCellX,
-      centerCellY
-    );
-    this.upsertRoadSegment(left, top, "vertical", JUNCTION_LANES, JUNCTION_SPEED, "reverse", centerCellX, centerCellY);
-    this.upsertRoadSegment(left, centerCellY, "vertical", JUNCTION_LANES, JUNCTION_SPEED, "reverse", centerCellX, centerCellY);
-    this.upsertRoadSegment(
-      centerCellX + 1,
-      top,
-      "vertical",
-      JUNCTION_LANES,
-      JUNCTION_SPEED,
-      "forward",
-      centerCellX,
-      centerCellY
-    );
-    this.upsertRoadSegment(
-      centerCellX + 1,
-      centerCellY,
-      "vertical",
-      JUNCTION_LANES,
-      JUNCTION_SPEED,
-      "forward",
-      centerCellX,
-      centerCellY
-    );
-
-    this.recordReplay("placeLargeJunction", { centerCellX, centerCellY });
-    this.rebuildGraph();
-    this.pushNotification(
-      `Roundabout placed around intersection (${centerCellX}, ${centerCellY}).`,
-      "info"
-    );
   }
 
   bulldozeAt(
@@ -342,15 +348,26 @@ export class SimWorld {
 
     if (road) {
       const key = getRoadSegmentKey(road.x, road.y, road.orientation);
-      if (this.roads.has(key)) {
+      const existingRoad = this.roads.get(key);
+      if (existingRoad) {
         this.roads.delete(key);
+        this.budget += this.getRoadRefund(existingRoad);
         didChange = true;
         this.rebuildGraph();
       }
     }
 
     if (!didChange && this.isValidCell(cellX, cellY)) {
+      const existingBuildingId = this.buildingByCell.get(cellKey(cellX, cellY));
+      const existingBuilding =
+        existingBuildingId !== undefined
+          ? this.buildings.get(existingBuildingId)
+          : undefined;
       didChange = this.removeCellContents(cellX, cellY);
+      if (didChange && existingBuilding?.kind === "powerPlant") {
+        this.budget += this.getPowerPlantRefund();
+        this.pushNotification("Power plant sold back to the city budget.", "info");
+      }
     }
 
     if (didChange) {
@@ -370,10 +387,33 @@ export class SimWorld {
     }
 
     const key = getRoadSegmentKey(x, y, orientation);
+    const existing = this.roads.get(key);
 
     if (mode === "add") {
-      this.upsertRoadSegment(x, y, orientation, LOCAL_ROAD_LANES, LOCAL_ROAD_SPEED);
+      if (
+        existing &&
+        existing.lanes === this.getRoadLanes() &&
+        existing.speedLimit === this.getRoadSpeed()
+      ) {
+        return;
+      }
+
+      const cost = this.getRoadBuildCost();
+      if (!this.spendBudget(cost, "road work")) {
+        return;
+      }
+
+      this.upsertRoadSegment(
+        x,
+        y,
+        orientation,
+        this.getRoadLanes(),
+        this.getRoadSpeed()
+      );
     } else {
+      if (!existing) {
+        return;
+      }
       this.roads.delete(key);
     }
 
@@ -398,6 +438,14 @@ export class SimWorld {
         }
       }
     } else {
+      const existingZone = this.zones.get(key);
+      if (existingZone?.zoneType !== zoneType) {
+        const cost = this.getZonePlacementCost(zoneType);
+        if (!this.spendBudget(cost, `${zoneType} zoning`)) {
+          return;
+        }
+      }
+
       const zoneCell: ZoneCell = { cellKey: key, x, y, zoneType };
       this.zones.set(key, zoneCell);
       this.upsertZonedBuilding(zoneCell);
@@ -428,7 +476,11 @@ export class SimWorld {
       happiness: 0.8,
       abandoned: false,
       accessNodeIds: [],
-      outageTicksRemaining: 0
+      outageTicksRemaining: 0,
+      serviceReliability: 0.72,
+      throughputScore: 0.72,
+      productivity: 0.72,
+      recentOutageTicks: 0
     };
 
     this.buildings.set(id, building);
@@ -449,6 +501,14 @@ export class SimWorld {
       if (existingBuilding?.kind === "powerPlant") {
         return;
       }
+    }
+
+    const cost = this.getPowerPlantCost();
+    if (!this.spendBudget(cost, "power construction")) {
+      return;
+    }
+
+    if (existingBuildingId) {
       this.removeBuilding(existingBuildingId);
     }
 
@@ -461,12 +521,16 @@ export class SimWorld {
       cellY: y,
       kind: "powerPlant",
       occupancy: 0,
-      jobs: 20,
+      jobs: this.progression.unlocks.advancedPowerPlants ? 26 : 20,
       powered: true,
       happiness: 1,
       abandoned: false,
       accessNodeIds: [],
-      outageTicksRemaining: 0
+      outageTicksRemaining: 0,
+      serviceReliability: 1,
+      throughputScore: 1,
+      productivity: 1,
+      recentOutageTicks: 0
     };
     this.buildings.set(buildingId, building);
     this.buildingByCell.set(slotKey, buildingId);
@@ -476,7 +540,7 @@ export class SimWorld {
       id: facilityId,
       buildingId,
       kind,
-      crewCapacity: 2,
+      crewCapacity: this.getPlantCrewCapacity(),
       activeJobIds: []
     });
 
@@ -546,7 +610,8 @@ export class SimWorld {
     return {
       activeTrips: this.getActiveTrips(),
       buildings: this.getBuildings(),
-      powerJobs: this.getPowerJobs()
+      powerJobs: this.getPowerJobs(),
+      progression: this.progression
     };
   }
 
@@ -574,16 +639,115 @@ export class SimWorld {
     return [...this.powerJobs.values()];
   }
 
+  private getRoadLanes() {
+    return this.progression.unlocks.arterialRoads ? ARTERIAL_ROAD_LANES : LOCAL_ROAD_LANES;
+  }
+
+  private getRoadSpeed() {
+    return this.progression.unlocks.arterialRoads ? ARTERIAL_ROAD_SPEED : LOCAL_ROAD_SPEED;
+  }
+
+  private getPlantCrewCapacity() {
+    return this.progression.unlocks.advancedPowerPlants ? 3 : 2;
+  }
+
+  private getOccupancyCap() {
+    const denseBonus = this.progression.unlocks.denserZones ? 4 : 0;
+    return 18 + denseBonus + this.progression.unlocks.occupancyCapBonus;
+  }
+
+  private getRoadBuildCost() {
+    const stageIndex = CITY_STAGE_ORDER.indexOf(this.progression.currentStage);
+    return Math.round(
+      BASE_ROAD_BUILD_COST * (1 + stageIndex * 0.18 + this.roads.size / 220)
+    );
+  }
+
+  private getZonePlacementCost(zoneType: ZoneType) {
+    const stageIndex = CITY_STAGE_ORDER.indexOf(this.progression.currentStage);
+    return Math.round(
+      BASE_ZONE_COST[zoneType] * (1 + stageIndex * 0.12 + this.zones.size / 260)
+    );
+  }
+
+  private getPowerPlantCost() {
+    return Math.round(
+      BASE_POWER_PLANT_COST *
+        (1 +
+          Math.max(0, this.facilities.size - 1) * 0.18 +
+          Math.max(0, this.progression.pressureTier - 1) * 0.06)
+    );
+  }
+
+  private getPowerPlantRefund() {
+    return this.getPowerPlantCost();
+  }
+
+  private getRoadRefund(road: RoadSegment) {
+    return Math.round(
+      (BASE_ROAD_BUILD_COST + road.lanes * 5 + road.speedLimit * 10) * 0.7
+    );
+  }
+
+  private spendBudget(cost: number, reason: string) {
+    if (this.budget < cost) {
+      this.pushNotification(
+        `Not enough cash for ${reason}. Need ${cost}, have ${Math.floor(this.budget)}.`,
+        "warning"
+      );
+      return false;
+    }
+
+    this.budget -= cost;
+    return true;
+  }
+
+  private computeTripCompletionRate() {
+    const attempts = Math.max(1, this.tripAttemptsWindow);
+    return clamp(this.tripCompletionsWindow / attempts, 0, 1);
+  }
+
+  private computeDebtPressure() {
+    if (this.budget >= 0) {
+      return 0;
+    }
+
+    return clamp(Math.abs(this.budget) / 12, 0, 100);
+  }
+
+  private computeCongestionStress() {
+    if (this.edges.length === 0) {
+      return 0;
+    }
+
+    const totalUtilization = this.edges.reduce((sum, edge) => sum + edge.utilization, 0);
+    const blockedEdges = this.edges.filter((edge) => edge.blocked).length;
+    const queuedTrips = [...this.activeTrips.values()].filter(
+      (trip) => trip.state === "queued"
+    ).length;
+
+    return clamp(
+      totalUtilization / this.edges.length +
+        blockedEdges / Math.max(1, this.edges.length) +
+        queuedTrips / 60,
+      0,
+      1
+    );
+  }
+
   private computeStats(): CityStats {
     const budgetBreakdown = this.computeBudgetBreakdown();
     let population = 0;
     let jobs = 0;
+    let productiveJobs = 0;
     let residentialCount = 0;
     let commercialCount = 0;
     let industrialCount = 0;
     let totalBuildings = 0;
     let poweredBuildings = 0;
     let powerPlants = 0;
+    let totalServiceReliability = 0;
+    let serviceReliabilityCount = 0;
 
     for (const building of this.buildings.values()) {
       jobs += building.jobs;
@@ -598,8 +762,13 @@ export class SimWorld {
         poweredBuildings += 1;
       }
 
+      totalServiceReliability += building.serviceReliability;
+      serviceReliabilityCount += 1;
+
       if (building.kind === "residential") {
         population += building.occupancy;
+      } else {
+        productiveJobs += building.jobs * building.productivity;
       }
 
       if (building.abandoned) {
@@ -641,29 +810,42 @@ export class SimWorld {
       }
     }
 
+    const tripCompletionRate = this.computeTripCompletionRate();
+    const avgServiceReliability =
+      serviceReliabilityCount > 0 ? totalServiceReliability / serviceReliabilityCount : 0;
+    const congestionStress = this.computeCongestionStress();
+    const budgetDelta =
+      budgetBreakdown.populationIncome -
+      budgetBreakdown.roadsUpkeep -
+      budgetBreakdown.facilitiesUpkeep;
+    const debtPressure = this.computeDebtPressure();
+
     return {
       tick: this.tick,
       population,
       jobs,
+      productiveJobs,
       activeTrips: this.activeTrips.size,
       queuedTrips,
       avgTravelTime,
+      tripCompletionRate,
+      avgServiceReliability,
+      congestionStress,
       budget: this.budget,
       budgetIncome: budgetBreakdown.populationIncome,
       roadsUpkeep: budgetBreakdown.roadsUpkeep,
       facilitiesUpkeep: budgetBreakdown.facilitiesUpkeep,
-      budgetDelta:
-        budgetBreakdown.populationIncome -
-        budgetBreakdown.roadsUpkeep -
-        budgetBreakdown.facilitiesUpkeep,
-      demandResidential: clamp((jobs - population) * 2 + 50, 0, 100),
+      budgetDelta,
+      positiveBudgetStreak: this.positiveBudgetStreak,
+      debtPressure,
+      demandResidential: clamp((productiveJobs - population) * 0.8 + 52, 0, 100),
       demandCommercial: clamp(
-        population > 0 ? (commercialCount / Math.max(1, residentialCount)) * 40 : 35,
+        population > 0 ? (commercialCount / Math.max(1, residentialCount)) * 38 : 35,
         0,
         100
       ),
       demandIndustrial: clamp(
-        population > 0 ? (industrialCount / Math.max(1, population / 12)) * 50 : 30,
+        population > 0 ? (industrialCount / Math.max(1, population / 14)) * 54 : 30,
         0,
         100
       ),
@@ -681,7 +863,7 @@ export class SimWorld {
       snapshotBytesEstimate:
         this.roads.size * 48 +
         this.edges.length * 72 +
-        this.buildings.size * 64 +
+        this.buildings.size * 88 +
         this.activeTrips.size * 96
     };
   }
@@ -725,9 +907,18 @@ export class SimWorld {
       const existingBuilding = this.buildings.get(existingBuildingId);
       if (existingBuilding && existingBuilding.kind !== "powerPlant") {
         existingBuilding.kind = zoneCell.zoneType;
-        existingBuilding.jobs = baseJobsForZone(zoneCell.zoneType);
-        if (zoneCell.zoneType !== "residential") {
-          existingBuilding.occupancy = Math.max(existingBuilding.occupancy, 0);
+        existingBuilding.jobs = getBaseJobsForZone(
+          zoneCell.zoneType,
+          this.progression.unlocks
+        );
+        if (zoneCell.zoneType === "residential") {
+          existingBuilding.occupancy = clamp(
+            existingBuilding.occupancy,
+            0,
+            this.getOccupancyCap()
+          );
+        } else {
+          existingBuilding.occupancy = 0;
         }
         return;
       }
@@ -739,13 +930,20 @@ export class SimWorld {
       cellX: zoneCell.x,
       cellY: zoneCell.y,
       kind: zoneCell.zoneType,
-      occupancy: zoneCell.zoneType === "residential" ? 4 : 0,
-      jobs: baseJobsForZone(zoneCell.zoneType),
+      occupancy:
+        zoneCell.zoneType === "residential"
+          ? getResidentialSeedOccupancy(this.progression.unlocks)
+          : 0,
+      jobs: getBaseJobsForZone(zoneCell.zoneType, this.progression.unlocks),
       powered: true,
       happiness: 0.7,
       abandoned: false,
       accessNodeIds: this.resolveBuildingAccess(zoneCell.x, zoneCell.y),
-      outageTicksRemaining: 0
+      outageTicksRemaining: 0,
+      serviceReliability: 0.66,
+      throughputScore: 0.66,
+      productivity: 0.66,
+      recentOutageTicks: 0
     });
     this.buildingByCell.set(zoneCell.cellKey, buildingId);
   }
@@ -835,28 +1033,13 @@ export class SimWorld {
     }
   }
 
-  private isAreaClear(left: number, top: number, size: number) {
-    for (let x = left; x < left + size; x += 1) {
-      for (let y = top; y < top + size; y += 1) {
-        const slotKey = cellKey(x, y);
-        if (this.zones.has(slotKey) || this.buildingByCell.has(slotKey)) {
-          return false;
-        }
-      }
-    }
-
-    return true;
-  }
-
   private upsertRoadSegment(
     x: number,
     y: number,
     orientation: Orientation,
     lanes: number,
     speedLimit: number,
-    direction: RoadDirection = "both",
-    roundaboutCenterX?: number,
-    roundaboutCenterY?: number
+    direction: RoadDirection = "both"
   ) {
     const key = getRoadSegmentKey(x, y, orientation);
     this.roads.set(key, {
@@ -866,9 +1049,7 @@ export class SimWorld {
       orientation,
       direction,
       lanes,
-      speedLimit,
-      roundaboutCenterX,
-      roundaboutCenterY
+      speedLimit
     });
   }
 
@@ -916,6 +1097,7 @@ export class SimWorld {
         trip.destinationBuildingId === buildingId ||
         (trip.serviceJobId !== undefined && !this.powerJobs.has(trip.serviceJobId))
       ) {
+        this.registerTripFailure(trip.quantity);
         this.activeTrips.delete(tripId);
       }
     }
@@ -962,9 +1144,7 @@ export class SimWorld {
           utilization: 0,
           travelTime: baseTravelTime,
           blocked: false,
-          baseTravelTime,
-          roundaboutCenterX: segment.roundaboutCenterX,
-          roundaboutCenterY: segment.roundaboutCenterY
+          baseTravelTime
         };
 
         this.edges.push(edge);
@@ -994,6 +1174,7 @@ export class SimWorld {
 
     for (const [tripId, trip] of this.activeTrips.entries()) {
       if (trip.state === "failed") {
+        this.registerTripFailure(trip.quantity);
         this.activeTrips.delete(tripId);
       }
     }
@@ -1036,6 +1217,7 @@ export class SimWorld {
       const nextEdgeId = trip.routeEdgeIds[trip.currentLeg];
       const nextEdge = this.edges[nextEdgeId];
       if (!nextEdge) {
+        this.registerTripFailure(trip.quantity);
         completedTrips.push(trip.id);
         continue;
       }
@@ -1063,6 +1245,8 @@ export class SimWorld {
   }
 
   private completeTrip(trip: TripPacket) {
+    this.tripCompletionsWindow += trip.quantity;
+
     if (trip.purpose !== "service" || trip.serviceJobId === undefined) {
       return;
     }
@@ -1076,7 +1260,9 @@ export class SimWorld {
     const building = this.buildings.get(job.buildingId);
     if (building) {
       building.outageTicksRemaining = 0;
-      building.happiness = clamp(building.happiness + 0.15, 0, 1);
+      building.recentOutageTicks = Math.max(0, building.recentOutageTicks - 40);
+      building.serviceReliability = clamp(building.serviceReliability + 0.18, 0, 1);
+      building.happiness = clamp(building.happiness + 0.08, 0, 1);
     }
 
     for (const facility of this.facilities.values()) {
@@ -1098,36 +1284,43 @@ export class SimWorld {
   }
 
   private generateDemandTrips() {
-    if (this.activeTrips.size > 450) {
+    if (this.activeTrips.size > 500 + this.progression.pressureTier * 40) {
       return;
     }
 
-    const homes = this.getBuildings().filter(
+    const completionRate = this.computeTripCompletionRate();
+    const healthyHomes = this.getBuildings().filter(
       (building) =>
         building.kind === "residential" &&
         !building.abandoned &&
         building.powered &&
-        building.accessNodeIds.length > 0
+        building.accessNodeIds.length > 0 &&
+        building.productivity > 0.48
     );
 
     const jobTargets = this.getBuildings().filter(
       (building) =>
         (building.kind === "commercial" || building.kind === "industrial") &&
         !building.abandoned &&
-        building.accessNodeIds.length > 0
+        building.accessNodeIds.length > 0 &&
+        building.productivity > 0.35
     );
 
     const leisureTargets = this.getBuildings().filter(
       (building) =>
         building.kind === "commercial" &&
         !building.abandoned &&
-        building.accessNodeIds.length > 0
+        building.accessNodeIds.length > 0 &&
+        building.productivity > 0.3
     );
 
-    const demandBudget = Math.min(48, homes.length);
+    const demandBudget = Math.min(
+      52 + this.progression.pressureTier * 4,
+      healthyHomes.length
+    );
 
     for (let index = 0; index < demandBudget; index += 1) {
-      const home = homes[this.rng.nextInt(homes.length)];
+      const home = healthyHomes[this.rng.nextInt(healthyHomes.length)];
       if (!home) {
         break;
       }
@@ -1142,7 +1335,7 @@ export class SimWorld {
         );
       }
 
-      if (this.rng.next() > 0.55) {
+      if (this.rng.next() > 0.58 - completionRate * 0.18) {
         const leisureTarget = this.rng.pick(leisureTargets);
         if (leisureTarget) {
           this.createTripPacket(
@@ -1159,17 +1352,20 @@ export class SimWorld {
       (building) =>
         building.kind === "industrial" &&
         !building.abandoned &&
-        building.accessNodeIds.length > 0
+        building.accessNodeIds.length > 0 &&
+        building.productivity > 0.28
     );
     const cargoTargets = this.getBuildings().filter(
       (building) =>
         building.kind === "commercial" &&
         !building.abandoned &&
-        building.accessNodeIds.length > 0
+        building.accessNodeIds.length > 0 &&
+        building.productivity > 0.28
     );
 
     if (cargoOrigins.length > 0 && cargoTargets.length > 0) {
-      for (let index = 0; index < Math.min(10, cargoOrigins.length); index += 1) {
+      const cargoBudget = Math.min(12 + this.progression.pressureTier * 2, cargoOrigins.length);
+      for (let index = 0; index < cargoBudget; index += 1) {
         const origin = cargoOrigins[this.rng.nextInt(cargoOrigins.length)];
         const destination = cargoTargets[this.rng.nextInt(cargoTargets.length)];
         if (origin && destination) {
@@ -1186,9 +1382,12 @@ export class SimWorld {
     quantity: number,
     serviceJobId?: number
   ) {
+    this.tripAttemptsWindow += quantity;
+
     const originBuilding = this.buildings.get(originBuildingId);
     const destinationBuilding = this.buildings.get(destinationBuildingId);
     if (!originBuilding || !destinationBuilding) {
+      this.registerTripFailure(quantity);
       return null;
     }
 
@@ -1196,6 +1395,7 @@ export class SimWorld {
       originBuilding.accessNodeIds.length === 0 ||
       destinationBuilding.accessNodeIds.length === 0
     ) {
+      this.registerTripFailure(quantity);
       return null;
     }
 
@@ -1212,6 +1412,7 @@ export class SimWorld {
     );
 
     if (!route) {
+      this.registerTripFailure(quantity);
       return null;
     }
 
@@ -1237,7 +1438,18 @@ export class SimWorld {
     return packet;
   }
 
+  private registerTripFailure(quantity: number) {
+    this.tripFailuresWindow += quantity;
+  }
+
   private generateOutages() {
+    const debtPressure = this.computeDebtPressure();
+    const outageRisk =
+      0.018 +
+      this.progression.pressureTier * 0.004 +
+      this.computeCongestionStress() * 0.018 +
+      debtPressure * 0.0005;
+
     const candidates = this.getBuildings().filter(
       (building) =>
         building.kind !== "powerPlant" &&
@@ -1251,11 +1463,12 @@ export class SimWorld {
     );
 
     for (const building of candidates) {
-      if (this.rng.next() > 0.025) {
+      if (this.rng.next() > outageRisk) {
         continue;
       }
 
-      building.outageTicksRemaining = 80 + this.rng.nextInt(80);
+      building.outageTicksRemaining = 95 + this.rng.nextInt(110);
+      building.recentOutageTicks += 25;
 
       const jobId = this.ids.powerJobId++;
       this.powerJobs.set(jobId, {
@@ -1267,7 +1480,7 @@ export class SimWorld {
       });
 
       this.pushNotification(
-        `Power outage near (${building.cellX}, ${building.cellY}) needs a crew.`,
+        `Grid stress rising near (${building.cellX}, ${building.cellY}); a crew is needed.`,
         "warning"
       );
     }
@@ -1284,6 +1497,8 @@ export class SimWorld {
       return;
     }
 
+    const debtPenalty = this.computeDebtPressure() >= 55 ? 1 : 0;
+
     for (const facility of this.facilities.values()) {
       const sourceBuilding = this.buildings.get(facility.buildingId);
       if (!sourceBuilding) {
@@ -1296,7 +1511,8 @@ export class SimWorld {
       });
       facility.activeJobIds = unresolvedJobs;
 
-      let crewsAvailable = facility.crewCapacity - facility.activeJobIds.length;
+      let crewsAvailable =
+        Math.max(1, facility.crewCapacity - debtPenalty) - facility.activeJobIds.length;
       if (crewsAvailable <= 0) {
         continue;
       }
@@ -1325,61 +1541,361 @@ export class SimWorld {
     }
   }
 
+  private getAverageQueuePressure(building: Building) {
+    if (building.accessNodeIds.length === 0) {
+      return 1;
+    }
+
+    let totalQueue = 0;
+    for (const nodeId of building.accessNodeIds) {
+      totalQueue += this.nodes[nodeId]?.queueLength ?? 0;
+    }
+
+    return clamp(totalQueue / Math.max(1, building.accessNodeIds.length * 6), 0, 1);
+  }
+
   private updateBuildingsAndEconomy() {
-    const budgetBreakdown = this.computeBudgetBreakdown();
-    let populationIncome = 0;
     this.refreshPowerState();
+    const preStats = this.computeStats();
+    let populationIncome = 0;
+    const economicPressure = clamp(
+      (preStats.productiveJobs - preStats.population) / 120,
+      -1,
+      1
+    );
+    const debtPressure = preStats.debtPressure;
+    const congestionStress = preStats.congestionStress;
+    const completionRate = preStats.tripCompletionRate;
 
     for (const building of this.buildings.values()) {
       const accessible = building.accessNodeIds.length > 0;
-      if (!building.powered) {
-        building.happiness = clamp(building.happiness - 0.08, 0, 1);
-      } else if (accessible) {
-        building.happiness = clamp(building.happiness + 0.03, 0, 1);
-      } else {
-        building.happiness = clamp(building.happiness - 0.05, 0, 1);
+      const queuePressure = this.getAverageQueuePressure(building);
+      const outageBurden = clamp(building.recentOutageTicks / 180, 0, 1);
+
+      if (building.kind === "powerPlant") {
+        building.serviceReliability = 1;
+        building.throughputScore = 1;
+        building.productivity = 1;
+        continue;
       }
+
+      if (!building.powered) {
+        building.recentOutageTicks += 12;
+        building.serviceReliability = clamp(
+          building.serviceReliability - 0.12 - debtPressure * 0.0015,
+          0,
+          1
+        );
+      } else {
+        building.recentOutageTicks = Math.max(0, building.recentOutageTicks - 8);
+        building.serviceReliability = clamp(
+          building.serviceReliability + 0.02 - outageBurden * 0.01,
+          0,
+          1
+        );
+      }
+
+      building.throughputScore = clamp(
+        (accessible ? 1 : 0) -
+          queuePressure * 0.7 -
+          congestionStress * 0.4 -
+          debtPressure * 0.002,
+        0,
+        1
+      );
+      building.productivity = clamp(
+        building.serviceReliability * building.throughputScore,
+        0,
+        1
+      );
+
+      let happinessDelta = 0;
+      if (!building.powered) {
+        happinessDelta -= 0.12 + outageBurden * 0.04;
+      } else if (!accessible) {
+        happinessDelta -= 0.08;
+      } else {
+        happinessDelta += 0.01 + building.productivity * 0.03;
+      }
+
+      if (building.throughputScore < 0.45) {
+        happinessDelta -= 0.04;
+      }
+      if (building.serviceReliability < 0.55) {
+        happinessDelta -= 0.03;
+      }
+      if (debtPressure > 45) {
+        happinessDelta -= 0.03;
+      }
+
+      building.happiness = clamp(building.happiness + happinessDelta, 0, 1);
 
       if (building.kind === "residential") {
-        if (building.powered && accessible && !building.abandoned) {
-          building.occupancy = clamp(building.occupancy + 1, 0, 18);
-        } else {
-          building.occupancy = clamp(building.occupancy - 1, 0, 18);
+        const cap = this.getOccupancyCap();
+        if (
+          building.powered &&
+          accessible &&
+          !building.abandoned &&
+          building.productivity > 0.58 &&
+          completionRate > 0.45 &&
+          economicPressure > -0.2
+        ) {
+          const growth =
+            building.productivity > 0.8 && economicPressure > 0.35 && building.happiness > 0.7
+              ? 2
+              : 1;
+          building.occupancy = clamp(building.occupancy + growth, 0, cap);
+        } else if (!building.powered || !accessible || building.productivity < 0.32) {
+          building.occupancy = clamp(building.occupancy - 1, 0, cap);
         }
 
-        populationIncome += building.occupancy * 0.8;
+        populationIncome += building.occupancy * 0.8 * building.serviceReliability;
       }
 
-      if (building.kind !== "powerPlant" && !building.powered) {
-        building.outageTicksRemaining = Math.max(building.outageTicksRemaining - 20, 0);
+      if (building.outageTicksRemaining > 0) {
+        building.outageTicksRemaining = Math.max(building.outageTicksRemaining - 8, 0);
       }
 
-      building.abandoned = building.happiness < 0.18;
-      if (building.happiness > 0.42) {
+      building.abandoned = building.happiness < 0.2;
+      if (building.happiness > 0.58) {
         building.abandoned = false;
       }
+    }
+
+    const budgetBreakdown = this.computeBudgetBreakdown(populationIncome);
+    let maintenancePenalty = 0;
+    if (this.budget < 0) {
+      maintenancePenalty =
+        this.roads.size * 0.05 * this.progression.pressureTier + this.facilities.size * 1.2;
     }
 
     this.budget +=
       populationIncome -
       budgetBreakdown.roadsUpkeep -
-      budgetBreakdown.facilitiesUpkeep;
+      budgetBreakdown.facilitiesUpkeep -
+      maintenancePenalty;
+
+    const netCycle =
+      populationIncome -
+      budgetBreakdown.roadsUpkeep -
+      budgetBreakdown.facilitiesUpkeep -
+      maintenancePenalty;
+    if (netCycle >= 0) {
+      this.positiveBudgetStreak += 1;
+      this.longestPositiveBudgetStreak = Math.max(
+        this.longestPositiveBudgetStreak,
+        this.positiveBudgetStreak
+      );
+    } else {
+      if (this.positiveBudgetStreak >= 4) {
+        this.pushNotification("Budget streak broken. Maintenance pressure is climbing.", "warning");
+      }
+      this.positiveBudgetStreak = 0;
+    }
+
+    if (completionRate < 0.4 && this.tick % (BUILDING_UPDATE_INTERVAL * 3) === 0) {
+      this.pushNotification("Industrial district stalling: trip completion is too low.", "warning");
+    }
+
+    this.tripAttemptsWindow = Math.round(this.tripAttemptsWindow * 0.45);
+    this.tripCompletionsWindow = Math.round(this.tripCompletionsWindow * 0.45);
+    this.tripFailuresWindow = Math.round(this.tripFailuresWindow * 0.45);
+
     this.refreshPowerState();
+    this.evaluateProgression();
   }
 
-  private computeBudgetBreakdown(): BudgetBreakdown {
+  private computeBudgetBreakdown(populationIncomeOverride?: number): BudgetBreakdown {
     let populationIncome = 0;
     for (const building of this.buildings.values()) {
       if (building.kind === "residential") {
-        populationIncome += building.occupancy * 0.8;
+        populationIncome += building.occupancy * 0.8 * building.serviceReliability;
       }
     }
 
     return {
-      populationIncome,
-      roadsUpkeep: this.roads.size * 0.3,
-      facilitiesUpkeep: this.facilities.size * 12
+      populationIncome: populationIncomeOverride ?? populationIncome,
+      roadsUpkeep: this.getRoads().reduce(
+        (sum, road) => sum + road.lanes * 0.3 + road.speedLimit * 0.12,
+        0
+      ),
+      facilitiesUpkeep: this.getFacilities().reduce(
+        (sum, facility) => sum + facility.crewCapacity * 5.5,
+        0
+      )
     };
+  }
+
+  private buildConstraintProgress(
+    label: string,
+    current: number,
+    target: number,
+    comparator: "gte" | "lte"
+  ): MilestoneConstraintProgress {
+    return {
+      label,
+      current,
+      target,
+      comparator,
+      complete: compareMetric(current, target, comparator)
+    };
+  }
+
+  private buildMilestoneProgress(
+    definition: MilestoneDefinition,
+    stats: CityStats
+  ): MilestoneProgress {
+    const primary = this.buildConstraintProgress(
+      definition.primaryLabel,
+      stats[definition.primaryMetric],
+      definition.primaryTarget,
+      definition.primaryComparator
+    );
+    const secondary = definition.secondary.map((constraint) =>
+      this.buildConstraintProgress(
+        constraint.label,
+        stats[constraint.metric],
+        constraint.target,
+        constraint.comparator
+      )
+    );
+    const blockers = [
+      ...(!primary.complete
+        ? [
+            `${primary.label}: ${formatMetric(primary.current)} / ${formatMetric(primary.target)}`
+          ]
+        : []),
+      ...secondary
+        .filter((constraint) => !constraint.complete)
+        .map(
+          (constraint) =>
+            `${constraint.label}: ${formatMetric(constraint.current)} / ${formatMetric(
+              constraint.target
+            )}`
+        )
+    ];
+
+    return {
+      id: definition.id,
+      stage: definition.stage,
+      title: definition.title,
+      summary: definition.summary,
+      rewardText: definition.rewardText,
+      primary,
+      secondary,
+      blockers,
+      complete: primary.complete && secondary.every((constraint) => constraint.complete)
+    };
+  }
+
+  private updateScore(stats: CityStats) {
+    const milestoneScore = this.progression.completedMilestoneIds.length * 85;
+    const populationScore = stats.population * 0.7;
+    const reliabilityScore = stats.avgServiceReliability * 90;
+    const trafficScore = (1 - stats.congestionStress) * 80;
+    const budgetScore = Math.min(60, this.longestPositiveBudgetStreak * 8);
+    const score = Math.round(
+      milestoneScore + populationScore + reliabilityScore + trafficScore + budgetScore
+    );
+
+    this.progression.score = score;
+    this.progression.cityGrade = cityGradeForScore(score);
+  }
+
+  private applyMilestoneReward(milestoneId: MilestoneDefinition["id"]) {
+    switch (milestoneId) {
+      case "bootstrap-power":
+        this.budget += 600;
+        this.progression.unlocks.denserZones = true;
+        break;
+      case "town-growth":
+        this.budget += 900;
+        this.progression.unlocks.arterialRoads = true;
+        break;
+      case "logistics-flow":
+        this.budget += 1200;
+        this.progression.unlocks.advancedPowerPlants = true;
+        break;
+      case "resilience-run":
+        this.budget += 1500;
+        this.progression.unlocks.occupancyCapBonus += 4;
+        break;
+      default:
+        break;
+    }
+
+    this.syncUnlockedInfrastructure();
+  }
+
+  private syncUnlockedInfrastructure() {
+    for (const building of this.buildings.values()) {
+      if (building.kind === "commercial" || building.kind === "industrial") {
+        building.jobs = getBaseJobsForZone(
+          building.kind,
+          this.progression.unlocks
+        );
+      }
+
+      if (building.kind === "residential") {
+        building.occupancy = clamp(building.occupancy, 0, this.getOccupancyCap());
+      }
+
+      if (building.kind === "powerPlant") {
+        building.jobs = this.progression.unlocks.advancedPowerPlants ? 26 : 20;
+      }
+    }
+
+    for (const facility of this.facilities.values()) {
+      facility.crewCapacity = this.getPlantCrewCapacity();
+    }
+  }
+
+  private evaluateProgression(stats = this.computeStats()): ProgressionState {
+    const activeDefinition = MILESTONE_DEFINITIONS.find(
+      (definition) => !this.progression.completedMilestoneIds.includes(definition.id)
+    );
+
+    if (activeDefinition) {
+      this.progression.currentStage = activeDefinition.stage;
+      this.progression.activeMilestoneId = activeDefinition.id;
+      this.progression.activeMilestone = this.buildMilestoneProgress(activeDefinition, stats);
+
+      if (this.progression.activeMilestone.complete) {
+        this.progression.completedMilestoneIds = [
+          ...this.progression.completedMilestoneIds,
+          activeDefinition.id
+        ];
+        this.progression.rewardLog = [
+          activeDefinition.rewardText,
+          ...this.progression.rewardLog
+        ].slice(0, 6);
+        this.applyMilestoneReward(activeDefinition.id);
+        this.pushNotification(`Milestone achieved: ${activeDefinition.rewardText}`, "info");
+        return this.evaluateProgression(this.computeStats());
+      }
+    } else {
+      this.progression.activeMilestoneId = null;
+      this.progression.activeMilestone = null;
+      this.progression.currentStage = "resilience";
+    }
+
+    const threatLevel = clamp(
+      stats.congestionStress * 44 +
+        (1 - stats.tripCompletionRate) * 28 +
+        stats.outages * 7 +
+        stats.debtPressure * 0.42,
+      0,
+      100
+    );
+    const pressureTier = Math.min(4, Math.max(1, 1 + Math.floor(threatLevel / 25)));
+    if (pressureTier > this.progression.pressureTier) {
+      this.pushNotification(`Threat tier ${pressureTier} reached. The city is under harder pressure.`, "warning");
+    }
+
+    this.progression.threatLevel = threatLevel;
+    this.progression.pressureTier = pressureTier;
+    this.updateScore(stats);
+    return this.progression;
   }
 
   private sampleVisibleVehicles(simulationAlpha = 0) {
@@ -1412,28 +1928,9 @@ export class SimWorld {
 
           const offset = (sampleIndex / Math.max(sampleCount, 1)) * 0.12;
           const adjustedRatio = clamp(ratio - offset, 0, 1);
-          let x = fromNode.x + (toNode.x - fromNode.x) * adjustedRatio;
-          let y = fromNode.y + (toNode.y - fromNode.y) * adjustedRatio;
-          let heading = Math.atan2(toNode.y - fromNode.y, toNode.x - fromNode.x);
-
-          if (
-            edge.roundaboutCenterX !== undefined &&
-            edge.roundaboutCenterY !== undefined
-          ) {
-            const centerX = edge.roundaboutCenterX;
-            const centerY = edge.roundaboutCenterY;
-            const startAngle = Math.atan2(fromNode.y - centerY, fromNode.x - centerX);
-            let endAngle = Math.atan2(toNode.y - centerY, toNode.x - centerX);
-            while (endAngle <= startAngle) {
-              endAngle += Math.PI * 2;
-            }
-
-            const angle = startAngle + (endAngle - startAngle) * adjustedRatio;
-            const radius = 1;
-            x = centerX + Math.cos(angle) * radius;
-            y = centerY + Math.sin(angle) * radius;
-            heading = angle + Math.PI / 2;
-          }
+          const x = fromNode.x + (toNode.x - fromNode.x) * adjustedRatio;
+          const y = fromNode.y + (toNode.y - fromNode.y) * adjustedRatio;
+          const heading = Math.atan2(toNode.y - fromNode.y, toNode.x - fromNode.x);
 
           vehicles.push({
             id: trip.id * 100 + sampleIndex,
