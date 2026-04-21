@@ -119,40 +119,6 @@ type SystemTheme = "dark" | "light";
 const getPreferredTheme = (): SystemTheme =>
   window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 
-const getStarterTasks = (snapshot: SimSnapshot | null) => {
-  const stats = snapshot?.cityStats;
-
-  if (!stats || stats.powerPlants === 0) {
-    return [
-      "Drag a short road spine through the center of the map.",
-      "Place one power plant touching that road so the network can energize buildings.",
-      "Paint a small residential strip on the same road to start population growth."
-    ];
-  }
-
-  if (stats.population < 18) {
-    return [
-      "Add more residential zoning along powered roads to hit the first milestone.",
-      "Keep the budget flow near zero by expanding in compact blocks instead of long dead-end roads.",
-      "Use Power Focus if homes are staying dark after zoning."
-    ];
-  }
-
-  if (stats.jobs < stats.population * 0.7) {
-    return [
-      "Mix in commercial and industrial zoning so new residents can actually find work.",
-      "Keep jobs on connected roads or they will count poorly and drag demand down.",
-      "Watch Trip Completion before you overbuild industry."
-    ];
-  }
-
-  return [
-    "Expand in neighborhood-sized chunks instead of painting the whole map at once.",
-    "Use Traffic Focus when queues start forming around the same junctions repeatedly.",
-    "Protect your positive budget streak before chasing the next milestone."
-  ];
-};
-
 export const App = () => {
   const workerRef = useRef<Worker | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -436,7 +402,6 @@ export const App = () => {
         ? "power plant"
         : tool.replace("zone-", "");
   const activeMilestone = progression?.activeMilestone ?? null;
-  const starterTasks = getStarterTasks(snapshot);
   const blockers =
     activeMilestone?.blockers.length
       ? activeMilestone.blockers
@@ -546,20 +511,9 @@ export const App = () => {
           <section className="panel-section">
             <h2>Construction</h2>
             <p className="lede">
-              Click or drag to paint roads and zoning. Right drag bulldozes without
-              leaving build mode, and roads still snap directly to cell edges.
+              Left click uses the active tool. Right click bulldozes whatever is under
+              the cursor without leaving build mode. Roads snap directly to cell edges.
             </p>
-          </section>
-
-          <section className="panel-section">
-            <h2>Start Here</h2>
-            <div className="tip-list">
-              {starterTasks.map((task) => (
-                <div className="tip-card" key={task}>
-                  {task}
-                </div>
-              ))}
-            </div>
           </section>
 
           <section className="panel-section">
@@ -618,8 +572,8 @@ export const App = () => {
           <section className="panel-section">
             <h2>Controls</h2>
             <p className="hint">
-              Drag paints. Two-finger scroll pans. Pinch or modifier-wheel zooms.
-              Middle mouse, <code>Alt</code>, or holding space also enters pan mode.
+              Two-finger scroll pans. Pinch or modifier-wheel zooms. Middle mouse,
+              <code>Alt</code>, or holding space also enters pan mode.
             </p>
           </section>
 
@@ -668,6 +622,7 @@ export const App = () => {
             tool={tool}
             theme={systemTheme}
             onAction={handleCanvasAction}
+            onError={setRuntimeError}
           />
 
           {!snapshot || runtimeError ? (

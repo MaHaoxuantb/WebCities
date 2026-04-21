@@ -71,6 +71,10 @@ interface BudgetBreakdown {
   facilitiesUpkeep: number;
 }
 
+interface WorldOptions {
+  starterCity?: boolean;
+}
+
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
@@ -196,11 +200,16 @@ export class SimWorld {
   edges: RoadEdge[] = [];
   adjacency: number[][] = [];
 
-  constructor(width: number, height: number, seed: number) {
+  constructor(width: number, height: number, seed: number, options: WorldOptions = {}) {
     this.width = width;
     this.height = height;
     this.seed = seed;
     this.rng = createRng(seed);
+
+    if (options.starterCity) {
+      this.seedStarterCity();
+    }
+
     this.progression.activeMilestone = this.buildMilestoneProgress(
       MILESTONE_DEFINITIONS[0],
       this.computeStats()
@@ -703,10 +712,6 @@ export class SimWorld {
   }
 
   private computeTripCompletionRate() {
-    if (this.tripAttemptsWindow <= 0) {
-      return 1;
-    }
-
     const attempts = Math.max(1, this.tripAttemptsWindow);
     return clamp(this.tripCompletionsWindow / attempts, 0, 1);
   }
@@ -1035,6 +1040,91 @@ export class SimWorld {
         building.accessNodeIds.some((nodeId) => energizedNodes.has(nodeId));
       building.powered = connected && building.outageTicksRemaining <= 0;
     }
+  }
+
+  private seedStarterCity() {
+    if (this.width < 12 || this.height < 12) {
+      return;
+    }
+
+    const startX = Math.min(6, this.width - 6);
+    const startY = Math.min(6, this.height - 6);
+
+    for (let x = startX; x < startX + 6; x += 1) {
+      this.upsertRoadSegment(x, startY + 2, "horizontal", LOCAL_ROAD_LANES, LOCAL_ROAD_SPEED);
+    }
+    for (let y = startY; y < startY + 5; y += 1) {
+      this.upsertRoadSegment(startX + 3, y, "vertical", LOCAL_ROAD_LANES, LOCAL_ROAD_SPEED);
+    }
+
+    this.rebuildGraph();
+
+    const starterZones: Array<{ x: number; y: number; zoneType: ZoneType }> = [
+      { x: startX + 1, y: startY + 1, zoneType: "residential" },
+      { x: startX + 2, y: startY + 1, zoneType: "residential" },
+      { x: startX + 1, y: startY + 2, zoneType: "residential" },
+      { x: startX + 2, y: startY + 2, zoneType: "residential" },
+      { x: startX + 3, y: startY + 1, zoneType: "commercial" },
+      { x: startX + 3, y: startY + 2, zoneType: "industrial" }
+    ];
+
+    for (const zone of starterZones) {
+      const zoneCell: ZoneCell = {
+        cellKey: cellKey(zone.x, zone.y),
+        x: zone.x,
+        y: zone.y,
+        zoneType: zone.zoneType
+      };
+      this.zones.set(zoneCell.cellKey, zoneCell);
+      this.upsertZonedBuilding(zoneCell);
+    }
+
+    const buildingId = this.ids.buildingId++;
+    this.buildings.set(buildingId, {
+      id: buildingId,
+      cellX: startX,
+      cellY: startY + 1,
+      kind: "powerPlant",
+      occupancy: 0,
+      jobs: 20,
+      powered: true,
+      happiness: 1,
+      abandoned: false,
+      accessNodeIds: this.resolveBuildingAccess(startX, startY + 1),
+      outageTicksRemaining: 0,
+      serviceReliability: 1,
+      throughputScore: 1,
+      productivity: 1,
+      recentOutageTicks: 0
+    });
+    this.buildingByCell.set(cellKey(startX, startY + 1), buildingId);
+
+    const facilityId = this.ids.facilityId++;
+    this.facilities.set(facilityId, {
+      id: facilityId,
+      buildingId,
+      kind: "power",
+      crewCapacity: this.getPlantCrewCapacity(),
+      activeJobIds: []
+    });
+
+    this.refreshBuildingAccess();
+
+    for (const building of this.buildings.values()) {
+      if (building.kind === "powerPlant") {
+        continue;
+      }
+
+      building.happiness = 0.92;
+      building.serviceReliability = 1;
+      building.throughputScore = 0.92;
+      building.productivity = 0.9;
+    }
+
+    this.pushNotification(
+      "Founding block online: expand the starter district without losing positive cash flow.",
+      "info"
+    );
   }
 
   private upsertRoadSegment(
@@ -1724,7 +1814,7 @@ export class SimWorld {
         0
       ),
       facilitiesUpkeep: this.getFacilities().reduce(
-        (sum, facility) => sum + facility.crewCapacity * 5.5,
+        (sum, facility) => sum + facility.crewCapacity * 4,
         0
       )
     };
@@ -1795,12 +1885,8 @@ export class SimWorld {
   private updateScore(stats: CityStats) {
     const milestoneScore = this.progression.completedMilestoneIds.length * 85;
     const populationScore = stats.population * 0.7;
-    const reliabilityScore =
-      stats.totalBuildings > 0 ? stats.avgServiceReliability * 90 : 0;
-    const trafficScore =
-      this.tripAttemptsWindow > 0 || stats.activeTrips > 0
-        ? (1 - stats.congestionStress) * 80
-        : 0;
+    const reliabilityScore = stats.avgServiceReliability * 90;
+    const trafficScore = (1 - stats.congestionStress) * 80;
     const budgetScore = Math.min(60, this.longestPositiveBudgetStreak * 8);
     const score = Math.round(
       milestoneScore + populationScore + reliabilityScore + trafficScore + budgetScore

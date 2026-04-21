@@ -1,7 +1,7 @@
 import { openDB } from "idb";
 
 import { SAVE_SLOT_KEY } from "../shared/constants";
-import { parseSaveGame, type SaveGameV1 } from "../shared/save";
+import { parseSaveGame, type SaveGameV2 } from "../shared/save";
 
 const FILE_EXTENSION = ".webcities.json";
 const DB_NAME = "webcities";
@@ -17,7 +17,7 @@ const getDb = () =>
   });
 
 export const saveGameToIndexedDb = async (
-  saveGame: SaveGameV1,
+  saveGame: SaveGameV2,
   slotKey = SAVE_SLOT_KEY
 ) => {
   const db = await getDb();
@@ -40,7 +40,7 @@ export const hasIndexedDbSave = async (slotKey = SAVE_SLOT_KEY) => {
   return save !== undefined;
 };
 
-export const downloadSaveFile = (saveGame: SaveGameV1) => {
+export const downloadSaveFile = (saveGame: SaveGameV2) => {
   const json = JSON.stringify(saveGame, null, 2);
   const blob = new Blob([json], { type: "application/json" });
   const url = URL.createObjectURL(blob);

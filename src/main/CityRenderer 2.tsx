@@ -53,6 +53,7 @@ interface CityRendererProps {
   tool: ToolMode;
   theme: "dark" | "light";
   onAction: (action: CanvasAction) => void;
+  onError?: (message: string | null) => void;
 }
 
 export type { CanvasAction };
@@ -61,13 +62,6 @@ interface CameraState {
   x: number;
   y: number;
   zoom: number;
-}
-
-interface PaintStrokeState {
-  mode: "build" | "bulldoze";
-  tool: ToolMode;
-  lastGridX: number;
-  lastGridY: number;
 }
 
 const ROAD_HIT_THRESHOLD = 0.24;
@@ -141,27 +135,6 @@ const zonePalette: Record<ZoneType, number> = {
 
 const TRAFFIC_FOCUS_THRESHOLD = 0.58;
 const HAPPINESS_FOCUS_THRESHOLD = 0.62;
-
-const sampleStroke = (
-  fromGridX: number,
-  fromGridY: number,
-  toGridX: number,
-  toGridY: number,
-  visit: (gridX: number, gridY: number) => void
-) => {
-  const steps = Math.max(
-    1,
-    Math.ceil(Math.max(Math.abs(toGridX - fromGridX), Math.abs(toGridY - fromGridY)) * 3)
-  );
-
-  for (let index = 0; index <= steps; index += 1) {
-    const ratio = index / steps;
-    visit(
-      fromGridX + (toGridX - fromGridX) * ratio,
-      fromGridY + (toGridY - fromGridY) * ratio
-    );
-  }
-};
 
 const pickRoadTarget = (gridX: number, gridY: number): RoadTarget => {
   const cellX = Math.floor(gridX);
@@ -355,7 +328,8 @@ export const CityRenderer = ({
   overlay,
   tool,
   theme,
-  onAction
+  onAction,
+  onError
 }: CityRendererProps) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<Application | null>(null);
@@ -369,15 +343,16 @@ export const CityRenderer = ({
   const toolRef = useRef<ToolMode>(tool);
   const themeRef = useRef<"dark" | "light">(theme);
   const onActionRef = useRef(onAction);
+  const onErrorRef = useRef(onError);
   const cameraRef = useRef<CameraState>({ x: 56, y: 56, zoom: 1 });
   const spacePanRef = useRef(false);
-  const paintStrokeRef = useRef<PaintStrokeState | null>(null);
 
   snapshotRef.current = snapshot;
   overlayRef.current = overlay;
   toolRef.current = tool;
   themeRef.current = theme;
   onActionRef.current = onAction;
+  onErrorRef.current = onError;
 
   useEffect(() => {
     scheduleRenderRef.current?.();
@@ -645,8 +620,15 @@ export const CityRenderer = ({
           return;
         }
 
-        drawSceneRef.current?.();
-        appRef.current.render();
+        try {
+          drawSceneRef.current?.();
+          appRef.current.render();
+          onErrorRef.current?.(null);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Renderer failed during drawing.";
+          onErrorRef.current?.(message);
+        }
       });
     };
 
@@ -662,264 +644,24 @@ export const CityRenderer = ({
         panStartX = event.clientX;
         panStartY = event.clientY;
         dragDistance = 0;
-        paintStrokeRef.current = null;
       } else {
         dragDistance = 0;
-
-        const rect = host.getBoundingClientRect();
-        const world = screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
-        const gridX = world.x / CELL_SIZE;
-        const gridY = world.y / CELL_SIZE;
-        const cellX = Math.floor(gridX);
-        const cellY = Math.floor(gridY);
-
-        if (cellX < 0 || cellY < 0 || cellX >= WORLD_WIDTH || cellY >= WORLD_HEIGHT) {
-          paintStrokeRef.current = null;
-          return;
-        }
-
-        const paintStroke = (
-          fromGridX: number,
-          fromGridY: number,
-          toGridX: number,
-          toGridY: number,
-          mode: PaintStrokeState["mode"],
-          currentTool: ToolMode
-        ) => {
-          const visited = new Set<string>();
-
-          sampleStroke(fromGridX, fromGridY, toGridX, toGridY, (sampleGridX, sampleGridY) => {
-            const sampleCellX = Math.floor(sampleGridX);
-            const sampleCellY = Math.floor(sampleGridY);
-            if (
-              sampleCellX < 0 ||
-              sampleCellY < 0 ||
-              sampleCellX >= WORLD_WIDTH ||
-              sampleCellY >= WORLD_HEIGHT
-            ) {
-              return;
-            }
-
-            if (mode === "bulldoze") {
-              const roadTarget = pickRoadTarget(sampleGridX, sampleGridY);
-              const roadKey =
-                roadTarget.distance <= ROAD_HIT_THRESHOLD
-                  ? `${roadTarget.orientation}:${roadTarget.x}:${roadTarget.y}`
-                  : null;
-              const key = roadKey ?? `cell:${sampleCellX}:${sampleCellY}`;
-              if (visited.has(key)) {
-                return;
-              }
-
-              visited.add(key);
-              onActionRef.current({
-                type: "bulldoze",
-                cellX: sampleCellX,
-                cellY: sampleCellY,
-                road:
-                  roadTarget.distance <= ROAD_HIT_THRESHOLD
-                    ? {
-                        x: roadTarget.x,
-                        y: roadTarget.y,
-                        orientation: roadTarget.orientation
-                      }
-                    : null
-              });
-              return;
-            }
-
-            if (currentTool === "road") {
-              const roadTarget = pickRoadTarget(sampleGridX, sampleGridY);
-              const key = `${roadTarget.orientation}:${roadTarget.x}:${roadTarget.y}`;
-              if (visited.has(key)) {
-                return;
-              }
-
-              visited.add(key);
-              onActionRef.current({
-                type: "road",
-                x: roadTarget.x,
-                y: roadTarget.y,
-                orientation: roadTarget.orientation,
-                mode: "add"
-              });
-              return;
-            }
-
-            if (currentTool === "service-power") {
-              const key = `service:${sampleCellX}:${sampleCellY}`;
-              if (visited.has(key)) {
-                return;
-              }
-
-              visited.add(key);
-              onActionRef.current({
-                type: "service",
-                x: sampleCellX,
-                y: sampleCellY,
-                kind: "power"
-              });
-              return;
-            }
-
-            const zoneType =
-              currentTool === "zone-residential"
-                ? "residential"
-                : currentTool === "zone-commercial"
-                  ? "commercial"
-                  : "industrial";
-            const key = `zone:${zoneType}:${sampleCellX}:${sampleCellY}`;
-            if (visited.has(key)) {
-              return;
-            }
-
-            visited.add(key);
-            onActionRef.current({
-              type: "zone",
-              x: sampleCellX,
-              y: sampleCellY,
-              zoneType
-            });
-          });
-        };
-
-        const currentTool = toolRef.current;
-        const mode = event.button === 2 ? "bulldoze" : "build";
-        paintStroke(
-          gridX,
-          gridY,
-          gridX,
-          gridY,
-          mode,
-          currentTool
-        );
-
-        if (event.button === 2 || currentTool !== "service-power") {
-          paintStrokeRef.current = {
-            mode,
-            tool: currentTool,
-            lastGridX: gridX,
-            lastGridY: gridY
-          };
-        } else {
-          paintStrokeRef.current = null;
-        }
       }
     };
 
     const handlePointerMove = (event: PointerEvent) => {
-      if (isPanning) {
-        const dx = event.clientX - panStartX;
-        const dy = event.clientY - panStartY;
-        dragDistance += Math.abs(dx) + Math.abs(dy);
-        camera.x += dx;
-        camera.y += dy;
-        panStartX = event.clientX;
-        panStartY = event.clientY;
-        scheduleRender();
+      if (!isPanning) {
         return;
       }
 
-      if (activePointerId === null || event.pointerId !== activePointerId) {
-        return;
-      }
-
-      const stroke = paintStrokeRef.current;
-      if (!stroke) {
-        return;
-      }
-
-      const rect = host.getBoundingClientRect();
-      const world = screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
-      const gridX = world.x / CELL_SIZE;
-      const gridY = world.y / CELL_SIZE;
-      dragDistance += Math.abs(gridX - stroke.lastGridX) + Math.abs(gridY - stroke.lastGridY);
-
-      const currentTool = stroke.tool;
-      const visited = new Set<string>();
-      sampleStroke(stroke.lastGridX, stroke.lastGridY, gridX, gridY, (sampleGridX, sampleGridY) => {
-        const sampleCellX = Math.floor(sampleGridX);
-        const sampleCellY = Math.floor(sampleGridY);
-        if (
-          sampleCellX < 0 ||
-          sampleCellY < 0 ||
-          sampleCellX >= WORLD_WIDTH ||
-          sampleCellY >= WORLD_HEIGHT
-        ) {
-          return;
-        }
-
-        if (stroke.mode === "bulldoze") {
-          const roadTarget = pickRoadTarget(sampleGridX, sampleGridY);
-          const roadKey =
-            roadTarget.distance <= ROAD_HIT_THRESHOLD
-              ? `${roadTarget.orientation}:${roadTarget.x}:${roadTarget.y}`
-              : null;
-          const key = roadKey ?? `cell:${sampleCellX}:${sampleCellY}`;
-          if (visited.has(key)) {
-            return;
-          }
-
-          visited.add(key);
-          onActionRef.current({
-            type: "bulldoze",
-            cellX: sampleCellX,
-            cellY: sampleCellY,
-            road:
-              roadTarget.distance <= ROAD_HIT_THRESHOLD
-                ? {
-                    x: roadTarget.x,
-                    y: roadTarget.y,
-                    orientation: roadTarget.orientation
-                  }
-                : null
-          });
-          return;
-        }
-
-        if (currentTool === "road") {
-          const roadTarget = pickRoadTarget(sampleGridX, sampleGridY);
-          const key = `${roadTarget.orientation}:${roadTarget.x}:${roadTarget.y}`;
-          if (visited.has(key)) {
-            return;
-          }
-
-          visited.add(key);
-          onActionRef.current({
-            type: "road",
-            x: roadTarget.x,
-            y: roadTarget.y,
-            orientation: roadTarget.orientation,
-            mode: "add"
-          });
-          return;
-        }
-
-        const zoneType =
-          currentTool === "zone-residential"
-            ? "residential"
-            : currentTool === "zone-commercial"
-              ? "commercial"
-              : "industrial";
-        const key = `zone:${zoneType}:${sampleCellX}:${sampleCellY}`;
-        if (visited.has(key)) {
-          return;
-        }
-
-        visited.add(key);
-        onActionRef.current({
-          type: "zone",
-          x: sampleCellX,
-          y: sampleCellY,
-          zoneType
-        });
-      });
-
-      paintStrokeRef.current = {
-        ...stroke,
-        lastGridX: gridX,
-        lastGridY: gridY
-      };
+      const dx = event.clientX - panStartX;
+      const dy = event.clientY - panStartY;
+      dragDistance += Math.abs(dx) + Math.abs(dy);
+      camera.x += dx;
+      camera.y += dy;
+      panStartX = event.clientX;
+      panStartY = event.clientY;
+      scheduleRender();
     };
 
     const handlePointerUp = (event: PointerEvent) => {
@@ -928,12 +670,75 @@ export const CityRenderer = ({
       }
 
       activePointerId = null;
-      paintStrokeRef.current = null;
 
       if (isPanning) {
         isPanning = false;
         return;
       }
+
+      if (dragDistance > 4) {
+        dragDistance = 0;
+        return;
+      }
+
+      const rect = host.getBoundingClientRect();
+      const world = screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+      const gridX = world.x / CELL_SIZE;
+      const gridY = world.y / CELL_SIZE;
+      const cellX = Math.floor(gridX);
+      const cellY = Math.floor(gridY);
+      if (cellX < 0 || cellY < 0 || cellX >= WORLD_WIDTH || cellY >= WORLD_HEIGHT) {
+        return;
+      }
+
+      const currentTool = toolRef.current;
+      const roadTarget = pickRoadTarget(gridX, gridY);
+
+      if (event.button === 2) {
+        onActionRef.current({
+          type: "bulldoze",
+          cellX,
+          cellY,
+          road:
+            roadTarget.distance <= ROAD_HIT_THRESHOLD
+              ? {
+                  x: roadTarget.x,
+                  y: roadTarget.y,
+                  orientation: roadTarget.orientation
+                }
+              : null
+        });
+        return;
+      }
+
+      if (currentTool === "road") {
+        onActionRef.current({
+          type: "road",
+          x: roadTarget.x,
+          y: roadTarget.y,
+          orientation: roadTarget.orientation,
+          mode: "add"
+        });
+        return;
+      }
+
+      if (currentTool === "service-power") {
+        onActionRef.current({
+          type: "service",
+          x: cellX,
+          y: cellY,
+          kind: "power"
+        });
+        return;
+      }
+
+      const zoneType =
+        currentTool === "zone-residential"
+          ? "residential"
+          : currentTool === "zone-commercial"
+            ? "commercial"
+            : "industrial";
+      onActionRef.current({ type: "zone", x: cellX, y: cellY, zoneType });
     };
 
     const handlePointerCancel = (event: PointerEvent) => {
@@ -944,7 +749,6 @@ export const CityRenderer = ({
       activePointerId = null;
       isPanning = false;
       dragDistance = 0;
-      paintStrokeRef.current = null;
     };
 
     const handleWheel = (event: WheelEvent) => {
@@ -984,13 +788,23 @@ export const CityRenderer = ({
     };
 
     const setup = async () => {
-      await app.init({
-        backgroundColor: themePalette[themeRef.current].sceneBackground,
-        antialias: false,
-        resizeTo: host,
-        autoDensity: true,
-        resolution: window.devicePixelRatio || 1
-      });
+      try {
+        await app.init({
+          backgroundColor: themePalette[themeRef.current].sceneBackground,
+          antialias: false,
+          preference: "webgl",
+          resizeTo: host,
+          autoDensity: true,
+          resolution: window.devicePixelRatio || 1
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Renderer failed to initialize.";
+        onErrorRef.current?.(message);
+        return;
+      }
 
       if (cancelled) {
         app.destroy(true, { children: true });
@@ -1006,6 +820,7 @@ export const CityRenderer = ({
       scheduleRenderRef.current = scheduleRender;
 
       host.appendChild(app.canvas);
+      onErrorRef.current?.(null);
       host.style.touchAction = "none";
       const preventContextMenu = (event: Event) => event.preventDefault();
       host.addEventListener("contextmenu", preventContextMenu);
